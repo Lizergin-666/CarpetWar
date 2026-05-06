@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import cors from "cors";
 import express from "express";
 import { createServer } from "http";
@@ -21,12 +22,18 @@ const WATER = -1;
 const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const STATS_FILE_PATH = path.resolve(process.cwd(), "data", "pvp-stats.json");
+const STATS_PERSISTENCE_MODE = String(
+  process.env.STATS_PERSISTENCE_MODE ?? "local"
+).toLowerCase();
+const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
 type OpponentId = string | null;
 type TurnMark = "unknown" | "miss" | "hit";
 type RoomPhase = "lobby" | "playing" | "finished";
 type RoomMode = "classic" | "blitz3m";
 type RoundOutcome = "win" | "loss" | "draw";
+type StatsPersistenceMode = "local" | "supabase" | "hybrid";
 
 interface PlayerProfile {
   name: string;
@@ -138,6 +145,12 @@ interface RoomActionAck {
   roomCode?: string;
 }
 
+interface StatsFilePayload {
+  version: number;
+  updatedAtMs: number;
+  stats: PlayerStat[];
+}
+
 app.use(
   cors({
     origin: clientOrigin,
@@ -167,6 +180,37 @@ const socketToRoom = new Map<string, string>();
 const socketProfiles = new Map<string, PlayerProfile>();
 const playerStats = new Map<string, PlayerStat>();
 
+function normalizePersistenceMode(raw: string): StatsPersistenceMode {
+  if (raw === "supabase") return "supabase";
+  if (raw === "hybrid") return "hybrid";
+  return "local";
+}
+
+const configuredPersistenceMode = normalizePersistenceMode(STATS_PERSISTENCE_MODE);
+const hasSupabaseCredentials = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+const useSupabasePersistence =
+  (configuredPersistenceMode === "supabase" ||
+    configuredPersistenceMode === "hybrid") &&
+  hasSupabaseCredentials;
+const useLocalPersistence =
+  configuredPersistenceMode === "local" ||
+  configuredPersistenceMode === "hybrid" ||
+  !hasSupabaseCredentials;
+
+const supabaseClient: SupabaseClient | null = useSupabasePersistence
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    })
+  : null;
+
+function logServerInfo(message: string): void {
+  // eslint-disable-next-line no-console
+  console.log(`[SeaWar] ${message}`);
+}
+
 function ensureStatsDirectory(): void {
   const dirPath = path.dirname(STATS_FILE_PATH);
   if (!existsSync(dirPath)) {
@@ -176,34 +220,15 @@ function ensureStatsDirectory(): void {
 
 function loadPlayerStatsFromDisk(): void {
   try {
+    if (!useLocalPersistence) return;
     if (!existsSync(STATS_FILE_PATH)) return;
     const raw = readFileSync(STATS_FILE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as {
-      stats?: PlayerStat[];
-    };
+    const parsed = JSON.parse(raw) as Partial<StatsFilePayload>;
     if (!parsed || !Array.isArray(parsed.stats)) return;
 
     for (const item of parsed.stats) {
-      if (
-        !item ||
-        typeof item.playerKey !== "string" ||
-        typeof item.name !== "string" ||
-        typeof item.city !== "string" ||
-        typeof item.games !== "number" ||
-        typeof item.wins !== "number" ||
-        typeof item.losses !== "number" ||
-        typeof item.shots !== "number" ||
-        typeof item.hits !== "number"
-      ) {
-        continue;
-      }
-
-      playerStats.set(item.playerKey, {
-        ...item,
-        draws: typeof item.draws === "number" ? item.draws : 0,
-        updatedAtMs:
-          typeof item.updatedAtMs === "number" ? item.updatedAtMs : Date.now(),
-      });
+      if (!isValidPlayerStat(item)) continue;
+      mergePlayerStat(item);
     }
   } catch {
     // Ignore load errors and keep empty stats.
@@ -212,8 +237,9 @@ function loadPlayerStatsFromDisk(): void {
 
 function persistPlayerStatsToDisk(): void {
   try {
+    if (!useLocalPersistence) return;
     ensureStatsDirectory();
-    const payload = {
+    const payload: StatsFilePayload = {
       version: 1,
       updatedAtMs: Date.now(),
       stats: Array.from(playerStats.values()),
@@ -224,6 +250,142 @@ function persistPlayerStatsToDisk(): void {
   } catch {
     // Ignore write errors to avoid impacting gameplay.
   }
+}
+
+function isValidPlayerStat(item: unknown): item is PlayerStat {
+  if (!item || typeof item !== "object") return false;
+  const stat = item as Partial<PlayerStat>;
+  return (
+    typeof stat.playerKey === "string" &&
+    typeof stat.name === "string" &&
+    typeof stat.city === "string" &&
+    typeof stat.games === "number" &&
+    typeof stat.wins === "number" &&
+    typeof stat.losses === "number" &&
+    typeof stat.shots === "number" &&
+    typeof stat.hits === "number"
+  );
+}
+
+function normalizePlayerStat(item: PlayerStat): PlayerStat {
+  return {
+    ...item,
+    draws: typeof item.draws === "number" ? item.draws : 0,
+    updatedAtMs: typeof item.updatedAtMs === "number" ? item.updatedAtMs : Date.now(),
+  };
+}
+
+function mergePlayerStat(nextStatRaw: PlayerStat): void {
+  const nextStat = normalizePlayerStat(nextStatRaw);
+  const prev = playerStats.get(nextStat.playerKey);
+  if (!prev) {
+    playerStats.set(nextStat.playerKey, nextStat);
+    return;
+  }
+  if (nextStat.updatedAtMs >= prev.updatedAtMs) {
+    playerStats.set(nextStat.playerKey, nextStat);
+  }
+}
+
+async function loadPlayerStatsFromSupabase(): Promise<void> {
+  if (!useSupabasePersistence || !supabaseClient) return;
+  const { data, error } = await supabaseClient
+    .from("player_stats")
+    .select(
+      "player_key,name,city,games,wins,draws,losses,shots,hits,updated_at_ms"
+    );
+  if (error) {
+    logServerInfo(`Supabase stats load failed: ${error.message}`);
+    return;
+  }
+
+  if (!Array.isArray(data)) return;
+  for (const row of data) {
+    const candidate: PlayerStat = {
+      playerKey: String(row.player_key ?? ""),
+      name: String(row.name ?? ""),
+      city: String(row.city ?? ""),
+      games: Number(row.games ?? 0),
+      wins: Number(row.wins ?? 0),
+      draws: Number(row.draws ?? 0),
+      losses: Number(row.losses ?? 0),
+      shots: Number(row.shots ?? 0),
+      hits: Number(row.hits ?? 0),
+      updatedAtMs: Number(row.updated_at_ms ?? Date.now()),
+    };
+
+    if (!isValidPlayerStat(candidate)) continue;
+    mergePlayerStat(candidate);
+  }
+  logServerInfo(`Supabase stats loaded: ${data.length}`);
+}
+
+function persistPlayerStatsToSupabase(): void {
+  if (!useSupabasePersistence || !supabaseClient) return;
+  const rows = Array.from(playerStats.values()).map((stat) => ({
+    player_key: stat.playerKey,
+    name: stat.name,
+    city: stat.city,
+    games: stat.games,
+    wins: stat.wins,
+    draws: stat.draws,
+    losses: stat.losses,
+    shots: stat.shots,
+    hits: stat.hits,
+    updated_at_ms: stat.updatedAtMs,
+  }));
+  if (rows.length === 0) return;
+
+  void supabaseClient
+    .from("player_stats")
+    .upsert(rows, { onConflict: "player_key" })
+    .then(({ error }) => {
+      if (error) {
+        logServerInfo(`Supabase stats persist failed: ${error.message}`);
+      }
+    });
+}
+
+function logPersistenceConfiguration(): void {
+  if (
+    (configuredPersistenceMode === "supabase" ||
+      configuredPersistenceMode === "hybrid") &&
+    !hasSupabaseCredentials
+  ) {
+    logServerInfo(
+      "Supabase credentials are missing. Falling back to local stats persistence."
+    );
+  }
+
+  const activeMode = useSupabasePersistence
+    ? useLocalPersistence
+      ? "hybrid"
+      : "supabase"
+    : "local";
+  logServerInfo(
+    `Stats persistence mode: ${activeMode} (configured: ${configuredPersistenceMode}).`
+  );
+}
+
+function bootstrapStatsPersistence(): void {
+  loadPlayerStatsFromDisk();
+  logPersistenceConfiguration();
+  if (!useSupabasePersistence) return;
+
+  void loadPlayerStatsFromSupabase()
+    .then(() => {
+      if (useLocalPersistence) {
+        persistPlayerStatsToDisk();
+      }
+      emitLeaderboardUpdate();
+    })
+    .catch((error: unknown) => {
+      if (error instanceof Error) {
+        logServerInfo(`Supabase bootstrap failed: ${error.message}`);
+        return;
+      }
+      logServerInfo("Supabase bootstrap failed with unknown error.");
+    });
 }
 
 function getSocketById(socketId: string): Socket | undefined {
@@ -497,6 +659,7 @@ function recordRoomResult(
       guestState.hits
     );
     persistPlayerStatsToDisk();
+    persistPlayerStatsToSupabase();
     emitLeaderboardUpdate();
     return;
   }
@@ -511,6 +674,7 @@ function recordRoomResult(
   upsertPlayerStat(winnerProfile, "win", winnerRoundState.shotsFired, winnerRoundState.hits);
   upsertPlayerStat(loserProfile, "loss", loserRoundState.shotsFired, loserRoundState.hits);
   persistPlayerStatsToDisk();
+  persistPlayerStatsToSupabase();
   emitLeaderboardUpdate();
 }
 
@@ -1025,7 +1189,7 @@ function leaveRoomBySocketId(socketId: string, reason?: string): void {
   }
 }
 
-loadPlayerStatsFromDisk();
+bootstrapStatsPersistence();
 
 setInterval(() => {
   for (const room of rooms.values()) {
