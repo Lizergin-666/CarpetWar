@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+:root {
+  --background: #020617;
+  --foreground: #e2f6ff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  min-height: 100vh;
+  background: var(--background);
+  background-image:
+    radial-gradient(circle at 14% 12%, rgb(34 211 238 / 18%), transparent 36%),
+    radial-gradient(circle at 86% 24%, rgb(6 182 212 / 14%), transparent 40%),
+    linear-gradient(160deg, #020617 0%, #082f49 50%, #031324 100%);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.24;
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgb(148 163 184 / 20%) 0,
+    rgb(148 163 184 / 20%) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  animation: tide-shift 12s linear infinite;
+}
+
+@keyframes tide-shift {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(6px);
+  }
+}
