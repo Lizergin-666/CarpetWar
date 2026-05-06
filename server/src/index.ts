@@ -101,6 +101,7 @@ interface RoomState {
   matchDeadlineMs: number | null;
   lastTimerSecondBroadcast: number | null;
   lastMatchSecondBroadcast: number | null;
+  rematchRequestedBy: Set<string>;
   players: Map<string, RoomPlayerState>;
   log: string[];
 }
@@ -119,6 +120,9 @@ interface RoomViewPayload {
   matchSecondsLeft: number;
   round: number;
   winner: "you" | "opponent" | "draw" | null;
+  canRematch: boolean;
+  youRequestedRematch: boolean;
+  opponentRequestedRematch: boolean;
   playerRadar: TurnMark[][];
   defenseRadar: TurnMark[][];
   playerShipGrid: number[][];
@@ -853,8 +857,33 @@ function resetRoomToLobby(room: RoomState, message: string): void {
   room.matchDeadlineMs = null;
   room.lastTimerSecondBroadcast = null;
   room.lastMatchSecondBroadcast = null;
+  room.rematchRequestedBy.clear();
   room.players.clear();
   room.log = [message];
+}
+
+function startRoomMatch(room: RoomState, openerMessage: string): RoomActionAck {
+  if (!room.guestId) {
+    return { ok: false, error: "Need second player to start." };
+  }
+
+  room.players.clear();
+  room.players.set(room.hostId, createRoomPlayerState(room.hostId));
+  room.players.set(room.guestId, createRoomPlayerState(room.guestId));
+  room.phase = "playing";
+  room.turnSocketId = room.hostId;
+  room.shotsLeft = SHOTS_PER_TURN;
+  room.round = 1;
+  room.winnerSocketId = null;
+  room.isDraw = false;
+  room.turnDeadlineMs = Date.now() + ROOM_TURN_SECONDS * 1000;
+  room.matchDeadlineMs =
+    room.mode === "blitz3m" ? Date.now() + BLITZ_MATCH_SECONDS * 1000 : null;
+  room.lastTimerSecondBroadcast = null;
+  room.lastMatchSecondBroadcast = null;
+  room.rematchRequestedBy.clear();
+  room.log = [openerMessage];
+  return { ok: true, roomCode: room.code };
 }
 
 function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
@@ -862,6 +891,10 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
   const opponentId = getOpponentId(room, socketId);
   const yourProfile = getSocketProfile(socketId);
   const opponentProfile = opponentId ? getSocketProfile(opponentId) : null;
+  const youRequestedRematch = room.rematchRequestedBy.has(socketId);
+  const opponentRequestedRematch = opponentId
+    ? room.rematchRequestedBy.has(opponentId)
+    : false;
   const youState = room.players.get(socketId) ?? null;
   const opponentState = opponentId ? room.players.get(opponentId) ?? null : null;
 
@@ -904,6 +937,16 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     status = "Match ended in a draw.";
   }
 
+  if (room.phase === "finished" && room.guestId !== null) {
+    if (youRequestedRematch && !opponentRequestedRematch) {
+      status = "Rematch requested. Waiting for opponent.";
+    } else if (!youRequestedRematch && opponentRequestedRematch) {
+      status = "Opponent requested rematch.";
+    } else if (youRequestedRematch && opponentRequestedRematch) {
+      status = "Rematch confirmed. Starting...";
+    }
+  }
+
   return {
     roomCode: room.code,
     mode: room.mode,
@@ -918,6 +961,9 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     matchSecondsLeft,
     round: room.round,
     winner,
+    canRematch: room.phase === "finished" && room.guestId !== null,
+    youRequestedRematch,
+    opponentRequestedRematch,
     playerRadar: youState ? cloneGrid(youState.radar) : createGrid<TurnMark>("unknown"),
     defenseRadar: opponentState
       ? cloneGrid(opponentState.radar)
@@ -1096,6 +1142,7 @@ io.on("connection", (socket) => {
       matchDeadlineMs: null,
       lastTimerSecondBroadcast: null,
       lastMatchSecondBroadcast: null,
+      rematchRequestedBy: new Set<string>(),
       players: new Map<string, RoomPlayerState>(),
       log: ["Room created. Share code with your friend."],
     };
@@ -1210,33 +1257,76 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (!room.guestId) {
-      callback?.({ ok: false, error: "Need second player to start." });
+    if (room.phase !== "lobby") {
+      callback?.({ ok: false, error: "Match can start only from lobby." });
       return;
     }
 
-    room.players.clear();
-    room.players.set(room.hostId, createRoomPlayerState(room.hostId));
-    room.players.set(room.guestId, createRoomPlayerState(room.guestId));
-    room.phase = "playing";
-    room.turnSocketId = room.hostId;
-    room.shotsLeft = SHOTS_PER_TURN;
-    room.round = 1;
-    room.winnerSocketId = null;
-    room.isDraw = false;
-    room.turnDeadlineMs = Date.now() + ROOM_TURN_SECONDS * 1000;
-    room.matchDeadlineMs =
-      room.mode === "blitz3m" ? Date.now() + BLITZ_MATCH_SECONDS * 1000 : null;
-    room.lastTimerSecondBroadcast = null;
-    room.lastMatchSecondBroadcast = null;
-    room.log = [
+    const result = startRoomMatch(
+      room,
       room.mode === "blitz3m"
         ? "Blitz 3m started. Host shoots first."
-        : "Match started. Host shoots first.",
-    ];
+        : "Match started. Host shoots first."
+    );
+    if (!result.ok) {
+      callback?.(result);
+      return;
+    }
+    emitRoomState(roomCode);
+    callback?.(result);
+  });
+
+  socket.on("room:rematch", (callback?: (response: RoomActionAck) => void) => {
+    const roomCode = socketToRoom.get(socket.id);
+    if (!roomCode) {
+      callback?.({ ok: false, error: "Join a room first." });
+      return;
+    }
+
+    const room = rooms.get(roomCode);
+    if (!room) {
+      callback?.({ ok: false, error: "Room not found." });
+      return;
+    }
+
+    if (room.phase !== "finished") {
+      callback?.({ ok: false, error: "Rematch is available only after match end." });
+      return;
+    }
+
+    if (!room.guestId) {
+      callback?.({ ok: false, error: "Need second player for rematch." });
+      return;
+    }
+
+    room.rematchRequestedBy.add(socket.id);
+    const actor = getRole(room, socket.id) === "host" ? "Host" : "Guest";
+    room.log.unshift(`${actor} requested rematch.`);
+    trimLog(room);
+
+    const bothConfirmed =
+      room.rematchRequestedBy.has(room.hostId) &&
+      room.rematchRequestedBy.has(room.guestId);
+
+    if (!bothConfirmed) {
+      emitRoomState(roomCode);
+      callback?.({ ok: true, roomCode });
+      return;
+    }
+
+    const result = startRoomMatch(
+      room,
+      room.mode === "blitz3m"
+        ? "Blitz 3m rematch started. Host shoots first."
+        : "Rematch started. Host shoots first."
+    );
+    if (!result.ok) {
+      callback?.(result);
+      return;
+    }
 
     emitRoomState(roomCode);
-    callback?.({ ok: true, roomCode });
+    callback?.(result);
   });
 
   socket.on(

@@ -25,6 +25,7 @@ interface LeaderboardEntry {
   city: string;
   games: number;
   wins: number;
+  draws: number;
   losses: number;
   accuracy: number;
   winRate: number;
@@ -57,6 +58,9 @@ interface RoomViewPayload {
   matchSecondsLeft: number;
   round: number;
   winner: "you" | "opponent" | "draw" | null;
+  canRematch: boolean;
+  youRequestedRematch: boolean;
+  opponentRequestedRematch: boolean;
   playerRadar: TurnMark[][];
   defenseRadar: TurnMark[][];
   playerShipGrid: number[][];
@@ -287,6 +291,10 @@ export default function PvpPage() {
     roomView?.phase === "lobby" &&
     roomView.youRole === "host" &&
     roomView.opponentConnected;
+  const canRequestRematch =
+    roomView?.canRematch === true &&
+    roomView.youRequestedRematch === false &&
+    socketConnected;
   const canChangeMode =
     roomView?.phase === "lobby" && roomView.youRole === "host" && socketConnected;
   const turnTimerCritical =
@@ -402,6 +410,19 @@ export default function PvpPage() {
     } catch {
       setError("Failed to copy invite link.");
     }
+  }
+
+  function requestRematch(): void {
+    const socket = socketRef.current;
+    if (!socket) return;
+
+    socket.emit("room:rematch", (response: RoomActionAck): void => {
+      if (!response.ok) {
+        setError(response.error ?? "Failed to request rematch.");
+        return;
+      }
+      setNotice("Rematch request sent.");
+    });
   }
 
   function handleCellClick(row: number, col: number): void {
@@ -523,6 +544,13 @@ export default function PvpPage() {
             Start match
           </button>
           <button
+            onClick={requestRematch}
+            disabled={!canRequestRematch}
+            className="rounded-lg border border-violet-500/70 bg-violet-500/20 px-3 py-1 text-violet-100 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Request rematch
+          </button>
+          <button
             onClick={leaveRoom}
             disabled={!roomView}
             className="rounded-lg border border-rose-500/70 bg-rose-500/20 px-3 py-1 text-rose-100 transition hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
@@ -615,6 +643,16 @@ export default function PvpPage() {
               Winner: {roomView.winner === "draw" ? "draw" : roomView.winner}
             </span>
           )}
+          {roomView?.canRematch && roomView.youRequestedRematch && (
+            <span className="rounded-full bg-violet-500/20 px-3 py-1 text-violet-100">
+              Rematch: requested
+            </span>
+          )}
+          {roomView?.canRematch && roomView.opponentRequestedRematch && (
+            <span className="rounded-full bg-violet-500/20 px-3 py-1 text-violet-100">
+              Opponent wants rematch
+            </span>
+          )}
         </div>
       </section>
 
@@ -680,8 +718,9 @@ export default function PvpPage() {
               <ul className="mt-1 space-y-1 text-xs text-cyan-100/90">
                 {leaderboard.global.slice(0, 8).map((entry, index) => (
                   <li key={entry.playerKey}>
-                    #{index + 1} {entry.name} ({entry.city}) | W:{entry.wins} L:
-                    {entry.losses} | Acc:{entry.accuracy}% | Score:{entry.score}
+                    #{index + 1} {entry.name} ({entry.city}) | W:{entry.wins} D:
+                    {entry.draws} L:{entry.losses} | Acc:{entry.accuracy}% |
+                    Score:{entry.score}
                   </li>
                 ))}
               </ul>
@@ -702,8 +741,8 @@ export default function PvpPage() {
                     <div className="mt-1 space-y-1">
                       {cityBoard.players.slice(0, 3).map((entry, idx) => (
                         <div key={`${cityBoard.city}-${entry.playerKey}`}>
-                          {idx + 1}. {entry.name} | W:{entry.wins} L:{entry.losses} |
-                          Score:{entry.score}
+                          {idx + 1}. {entry.name} | W:{entry.wins} D:{entry.draws}
+                          L:{entry.losses} | Score:{entry.score}
                         </div>
                       ))}
                     </div>
