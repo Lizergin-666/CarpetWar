@@ -15,6 +15,7 @@ const clientOrigin = process.env.CLIENT_ORIGIN ?? "http://localhost:3000";
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
 const ROOM_TURN_SECONDS = 20;
+const BLITZ_MATCH_SECONDS = 180;
 const ROOM_TIMEOUT_SWEEP_MS = 500;
 const WATER = -1;
 const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
@@ -24,6 +25,8 @@ const STATS_FILE_PATH = path.resolve(process.cwd(), "data", "pvp-stats.json");
 type OpponentId = string | null;
 type TurnMark = "unknown" | "miss" | "hit";
 type RoomPhase = "lobby" | "playing" | "finished";
+type RoomMode = "classic" | "blitz3m";
+type RoundOutcome = "win" | "loss" | "draw";
 
 interface PlayerProfile {
   name: string;
@@ -36,6 +39,7 @@ interface PlayerStat {
   city: string;
   games: number;
   wins: number;
+  draws: number;
   losses: number;
   shots: number;
   hits: number;
@@ -48,6 +52,7 @@ interface LeaderboardEntry {
   city: string;
   games: number;
   wins: number;
+  draws: number;
   losses: number;
   accuracy: number;
   winRate: number;
@@ -85,19 +90,24 @@ interface RoomState {
   code: string;
   hostId: string;
   guestId: string | null;
+  mode: RoomMode;
   phase: RoomPhase;
   turnSocketId: string | null;
   shotsLeft: number;
   round: number;
   winnerSocketId: string | null;
+  isDraw: boolean;
   turnDeadlineMs: number | null;
+  matchDeadlineMs: number | null;
   lastTimerSecondBroadcast: number | null;
+  lastMatchSecondBroadcast: number | null;
   players: Map<string, RoomPlayerState>;
   log: string[];
 }
 
 interface RoomViewPayload {
   roomCode: string;
+  mode: RoomMode;
   phase: RoomPhase;
   youRole: "host" | "guest";
   yourProfile: PlayerProfile;
@@ -106,8 +116,9 @@ interface RoomViewPayload {
   yourTurn: boolean;
   shotsLeft: number;
   turnSecondsLeft: number;
+  matchSecondsLeft: number;
   round: number;
-  winner: "you" | "opponent" | null;
+  winner: "you" | "opponent" | "draw" | null;
   playerRadar: TurnMark[][];
   defenseRadar: TurnMark[][];
   playerShipGrid: number[][];
@@ -185,6 +196,7 @@ function loadPlayerStatsFromDisk(): void {
 
       playerStats.set(item.playerKey, {
         ...item,
+        draws: typeof item.draws === "number" ? item.draws : 0,
         updatedAtMs:
           typeof item.updatedAtMs === "number" ? item.updatedAtMs : Date.now(),
       });
@@ -345,7 +357,7 @@ function percent(hits: number, shots: number): number {
 
 function scoreFromStat(stat: PlayerStat): number {
   const accuracy = percent(stat.hits, stat.shots);
-  return stat.wins * 100 - stat.losses * 30 + accuracy * 2;
+  return stat.wins * 100 + stat.draws * 35 - stat.losses * 30 + accuracy * 2;
 }
 
 function asLeaderboardEntry(stat: PlayerStat): LeaderboardEntry {
@@ -355,6 +367,7 @@ function asLeaderboardEntry(stat: PlayerStat): LeaderboardEntry {
     city: stat.city,
     games: stat.games,
     wins: stat.wins,
+    draws: stat.draws,
     losses: stat.losses,
     accuracy: percent(stat.hits, stat.shots),
     winRate: percent(stat.wins, stat.games),
@@ -422,18 +435,19 @@ function updateProfile(socketId: string, rawName: unknown, rawCity: unknown): Pl
 
 function upsertPlayerStat(
   profile: PlayerProfile,
-  didWin: boolean,
+  outcome: RoundOutcome,
   shots: number,
   hits: number
 ): void {
   const key = makePlayerKey(profile);
   const prev = playerStats.get(key);
   const next: PlayerStat = prev
-    ? {
+      ? {
         ...prev,
         games: prev.games + 1,
-        wins: prev.wins + (didWin ? 1 : 0),
-        losses: prev.losses + (didWin ? 0 : 1),
+        wins: prev.wins + (outcome === "win" ? 1 : 0),
+        draws: prev.draws + (outcome === "draw" ? 1 : 0),
+        losses: prev.losses + (outcome === "loss" ? 1 : 0),
         shots: prev.shots + shots,
         hits: prev.hits + hits,
         updatedAtMs: Date.now(),
@@ -443,8 +457,9 @@ function upsertPlayerStat(
         name: profile.name,
         city: profile.city,
         games: 1,
-        wins: didWin ? 1 : 0,
-        losses: didWin ? 0 : 1,
+        wins: outcome === "win" ? 1 : 0,
+        draws: outcome === "draw" ? 1 : 0,
+        losses: outcome === "loss" ? 1 : 0,
         shots,
         hits,
         updatedAtMs: Date.now(),
@@ -453,25 +468,44 @@ function upsertPlayerStat(
   playerStats.set(key, next);
 }
 
-function recordRoomResult(room: RoomState, winnerSocketId: string, loserSocketId: string): void {
+function recordRoomResult(
+  room: RoomState,
+  winnerSocketId: string | null,
+  loserSocketId: string | null,
+  isDraw: boolean
+): void {
+  if (isDraw) {
+    const hostState = room.players.get(room.hostId);
+    const guestId = room.guestId;
+    const guestState = guestId ? room.players.get(guestId) : undefined;
+    if (!hostState || !guestState || !guestId) return;
+
+    upsertPlayerStat(
+      getSocketProfile(room.hostId),
+      "draw",
+      hostState.shotsFired,
+      hostState.hits
+    );
+    upsertPlayerStat(
+      getSocketProfile(guestId),
+      "draw",
+      guestState.shotsFired,
+      guestState.hits
+    );
+    persistPlayerStatsToDisk();
+    emitLeaderboardUpdate();
+    return;
+  }
+
+  if (!winnerSocketId || !loserSocketId) return;
   const winnerRoundState = room.players.get(winnerSocketId);
   const loserRoundState = room.players.get(loserSocketId);
   if (!winnerRoundState || !loserRoundState) return;
 
   const winnerProfile = getSocketProfile(winnerSocketId);
   const loserProfile = getSocketProfile(loserSocketId);
-  upsertPlayerStat(
-    winnerProfile,
-    true,
-    winnerRoundState.shotsFired,
-    winnerRoundState.hits
-  );
-  upsertPlayerStat(
-    loserProfile,
-    false,
-    loserRoundState.shotsFired,
-    loserRoundState.hits
-  );
+  upsertPlayerStat(winnerProfile, "win", winnerRoundState.shotsFired, winnerRoundState.hits);
+  upsertPlayerStat(loserProfile, "loss", loserRoundState.shotsFired, loserRoundState.hits);
   persistPlayerStatsToDisk();
   emitLeaderboardUpdate();
 }
@@ -556,11 +590,14 @@ function applyRoomShot(
     room.turnSocketId = null;
     room.shotsLeft = 0;
     room.winnerSocketId = shooterId;
+    room.isDraw = false;
     room.turnDeadlineMs = null;
+    room.matchDeadlineMs = null;
     room.lastTimerSecondBroadcast = null;
+    room.lastMatchSecondBroadcast = null;
     room.log.unshift(`${actor} wins the match.`);
     trimLog(room);
-    recordRoomResult(room, shooterId, opponentId);
+    recordRoomResult(room, shooterId, opponentId, false);
     return { ok: true, roomCode: room.code };
   }
 
@@ -615,6 +652,69 @@ function resolveTurnTimeout(room: RoomState): boolean {
     if (!result.ok) break;
   }
 
+  return true;
+}
+
+function resolveMatchTimeout(room: RoomState): boolean {
+  if (room.phase !== "playing") return false;
+  if (room.mode !== "blitz3m") return false;
+  if (!room.matchDeadlineMs) return false;
+  if (Date.now() < room.matchDeadlineMs) return false;
+  if (!room.guestId) return false;
+
+  const hostState = room.players.get(room.hostId);
+  const guestState = room.players.get(room.guestId);
+  if (!hostState || !guestState) return false;
+
+  const hostDecksLeft = countRemainingDecks(hostState.shipHits, hostState.shipLengths);
+  const guestDecksLeft = countRemainingDecks(guestState.shipHits, guestState.shipLengths);
+  const hostAccuracy = percent(hostState.hits, hostState.shotsFired);
+  const guestAccuracy = percent(guestState.hits, guestState.shotsFired);
+
+  let winnerSocketId: string | null = null;
+  let loserSocketId: string | null = null;
+  let isDraw = false;
+
+  if (hostDecksLeft > guestDecksLeft) {
+    winnerSocketId = room.hostId;
+    loserSocketId = room.guestId;
+  } else if (guestDecksLeft > hostDecksLeft) {
+    winnerSocketId = room.guestId;
+    loserSocketId = room.hostId;
+  } else if (hostState.hits > guestState.hits) {
+    winnerSocketId = room.hostId;
+    loserSocketId = room.guestId;
+  } else if (guestState.hits > hostState.hits) {
+    winnerSocketId = room.guestId;
+    loserSocketId = room.hostId;
+  } else if (hostAccuracy > guestAccuracy) {
+    winnerSocketId = room.hostId;
+    loserSocketId = room.guestId;
+  } else if (guestAccuracy > hostAccuracy) {
+    winnerSocketId = room.guestId;
+    loserSocketId = room.hostId;
+  } else {
+    isDraw = true;
+  }
+
+  room.phase = "finished";
+  room.turnSocketId = null;
+  room.shotsLeft = 0;
+  room.winnerSocketId = winnerSocketId;
+  room.isDraw = isDraw;
+  room.turnDeadlineMs = null;
+  room.matchDeadlineMs = null;
+  room.lastTimerSecondBroadcast = null;
+  room.lastMatchSecondBroadcast = null;
+
+  if (isDraw) {
+    room.log.unshift("Blitz timer ended. Match is a draw.");
+  } else if (winnerSocketId) {
+    const winnerRole = getRole(room, winnerSocketId) === "host" ? "Host" : "Guest";
+    room.log.unshift(`Blitz timer ended. ${winnerRole} wins on tiebreak.`);
+  }
+  trimLog(room);
+  recordRoomResult(room, winnerSocketId, loserSocketId, isDraw);
   return true;
 }
 
@@ -748,8 +848,11 @@ function resetRoomToLobby(room: RoomState, message: string): void {
   room.shotsLeft = SHOTS_PER_TURN;
   room.round = 1;
   room.winnerSocketId = null;
+  room.isDraw = false;
   room.turnDeadlineMs = null;
+  room.matchDeadlineMs = null;
   room.lastTimerSecondBroadcast = null;
+  room.lastMatchSecondBroadcast = null;
   room.players.clear();
   room.log = [message];
 }
@@ -768,10 +871,18 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     yourTurn && room.turnDeadlineMs
       ? Math.max(0, Math.ceil((room.turnDeadlineMs - Date.now()) / 1000))
       : 0;
+  const matchSecondsLeft =
+    room.phase === "playing" && room.mode === "blitz3m" && room.matchDeadlineMs
+      ? Math.max(0, Math.ceil((room.matchDeadlineMs - Date.now()) / 1000))
+      : 0;
 
-  let winner: "you" | "opponent" | null = null;
-  if (room.phase === "finished" && room.winnerSocketId) {
-    winner = room.winnerSocketId === socketId ? "you" : "opponent";
+  let winner: "you" | "opponent" | "draw" | null = null;
+  if (room.phase === "finished") {
+    if (room.isDraw) {
+      winner = "draw";
+    } else if (room.winnerSocketId) {
+      winner = room.winnerSocketId === socketId ? "you" : "opponent";
+    }
   }
 
   let status = "Room ready.";
@@ -780,17 +891,22 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
       ? "Opponent connected. Host can start match."
       : "Waiting for opponent to join via room code.";
   } else if (room.phase === "playing") {
+    const blitzSuffix =
+      room.mode === "blitz3m" ? ` | Match: ${matchSecondsLeft}s` : "";
     status = yourTurn
-      ? `Your turn: ${room.shotsLeft} shots left (${turnSecondsLeft}s).`
-      : "Opponent turn. Wait for incoming salvo.";
+      ? `Your turn: ${room.shotsLeft} shots left (${turnSecondsLeft}s).${blitzSuffix}`
+      : `Opponent turn. Wait for incoming salvo.${blitzSuffix}`;
   } else if (winner === "you") {
     status = "You win this match.";
   } else if (winner === "opponent") {
     status = "Opponent wins this match.";
+  } else if (winner === "draw") {
+    status = "Match ended in a draw.";
   }
 
   return {
     roomCode: room.code,
+    mode: room.mode,
     phase: room.phase,
     youRole,
     yourProfile,
@@ -799,6 +915,7 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     yourTurn,
     shotsLeft: room.shotsLeft,
     turnSecondsLeft,
+    matchSecondsLeft,
     round: room.round,
     winner,
     playerRadar: youState ? cloneGrid(youState.radar) : createGrid<TurnMark>("unknown"),
@@ -866,9 +983,18 @@ loadPlayerStatsFromDisk();
 
 setInterval(() => {
   for (const room of rooms.values()) {
+    const matchChanged = resolveMatchTimeout(room);
+    if (matchChanged) {
+      room.lastTimerSecondBroadcast = null;
+      room.lastMatchSecondBroadcast = null;
+      emitRoomState(room.code);
+      continue;
+    }
+
     const changed = resolveTurnTimeout(room);
     if (changed) {
       room.lastTimerSecondBroadcast = null;
+      room.lastMatchSecondBroadcast = null;
       emitRoomState(room.code);
       continue;
     }
@@ -880,6 +1006,17 @@ setInterval(() => {
       );
       if (room.lastTimerSecondBroadcast !== secondsLeft) {
         room.lastTimerSecondBroadcast = secondsLeft;
+        emitRoomState(room.code);
+      }
+    }
+
+    if (room.phase === "playing" && room.mode === "blitz3m" && room.matchDeadlineMs) {
+      const matchSecondsLeft = Math.max(
+        0,
+        Math.ceil((room.matchDeadlineMs - Date.now()) / 1000)
+      );
+      if (room.lastMatchSecondBroadcast !== matchSecondsLeft) {
+        room.lastMatchSecondBroadcast = matchSecondsLeft;
         emitRoomState(room.code);
       }
     }
@@ -948,13 +1085,17 @@ io.on("connection", (socket) => {
       code: roomCode,
       hostId: socket.id,
       guestId: null,
+      mode: "classic",
       phase: "lobby",
       turnSocketId: null,
       shotsLeft: SHOTS_PER_TURN,
       round: 1,
       winnerSocketId: null,
+      isDraw: false,
       turnDeadlineMs: null,
+      matchDeadlineMs: null,
       lastTimerSecondBroadcast: null,
+      lastMatchSecondBroadcast: null,
       players: new Map<string, RoomPlayerState>(),
       log: ["Room created. Share code with your friend."],
     };
@@ -1010,6 +1151,47 @@ io.on("connection", (socket) => {
     }
   );
 
+  socket.on(
+    "room:setMode",
+    (
+      payload: { mode?: RoomMode },
+      callback?: (response: RoomActionAck) => void
+    ) => {
+      const roomCode = socketToRoom.get(socket.id);
+      if (!roomCode) {
+        callback?.({ ok: false, error: "Join a room first." });
+        return;
+      }
+
+      const room = rooms.get(roomCode);
+      if (!room) {
+        callback?.({ ok: false, error: "Room not found." });
+        return;
+      }
+
+      if (room.hostId !== socket.id) {
+        callback?.({ ok: false, error: "Only host can change mode." });
+        return;
+      }
+
+      if (room.phase !== "lobby") {
+        callback?.({ ok: false, error: "Mode can be changed only in lobby." });
+        return;
+      }
+
+      const mode = payload?.mode === "blitz3m" ? "blitz3m" : "classic";
+      room.mode = mode;
+      room.log.unshift(
+        mode === "blitz3m"
+          ? "Mode switched to Blitz 3m."
+          : "Mode switched to Classic."
+      );
+      trimLog(room);
+      emitRoomState(roomCode);
+      callback?.({ ok: true, roomCode });
+    }
+  );
+
   socket.on("room:start", (callback?: (response: RoomActionAck) => void) => {
     const roomCode = socketToRoom.get(socket.id);
     if (!roomCode) {
@@ -1041,9 +1223,17 @@ io.on("connection", (socket) => {
     room.shotsLeft = SHOTS_PER_TURN;
     room.round = 1;
     room.winnerSocketId = null;
+    room.isDraw = false;
     room.turnDeadlineMs = Date.now() + ROOM_TURN_SECONDS * 1000;
+    room.matchDeadlineMs =
+      room.mode === "blitz3m" ? Date.now() + BLITZ_MATCH_SECONDS * 1000 : null;
     room.lastTimerSecondBroadcast = null;
-    room.log = ["Match started. Host shoots first."];
+    room.lastMatchSecondBroadcast = null;
+    room.log = [
+      room.mode === "blitz3m"
+        ? "Blitz 3m started. Host shoots first."
+        : "Match started. Host shoots first.",
+    ];
 
     emitRoomState(roomCode);
     callback?.({ ok: true, roomCode });

@@ -16,7 +16,7 @@ export interface SoloCoachInput {
 }
 
 export interface PvpCoachInput {
-  winner: "you" | "opponent";
+  winner: "you" | "opponent" | "draw";
   rounds: number;
   yourShots: number;
   yourHits: number;
@@ -117,6 +117,12 @@ export function buildPvpCoach(input: PvpCoachInput): CoachReport {
     );
   }
 
+  if (input.winner === "draw") {
+    notes.push(
+      "Draw detected. In blitz endings, push higher conversion before the final minute."
+    );
+  }
+
   if (opponentAccuracy - yourAccuracy >= 12) {
     notes.push(
       "Opponent had a higher hit conversion. Focus on finishing partially found ships before scanning elsewhere."
@@ -137,7 +143,9 @@ export function buildPvpCoach(input: PvpCoachInput): CoachReport {
     headline:
       input.winner === "you"
         ? "AI Coach: winning structure detected."
-        : "AI Coach: tactical reset recommended.",
+        : input.winner === "opponent"
+        ? "AI Coach: tactical reset recommended."
+        : "AI Coach: balanced duel, optimize your finish.",
     verdict: verdictFromAccuracy(yourAccuracy),
     notes: notes.slice(0, 4),
   };

@@ -12,6 +12,7 @@ const STORAGE_PVP_PROFILE_KEY = "sea-war.pvp-profile.v1";
 type TurnMark = "unknown" | "miss" | "hit";
 type RoomPhase = "lobby" | "playing" | "finished";
 type Role = "host" | "guest";
+type RoomMode = "classic" | "blitz3m";
 
 interface PlayerProfile {
   name: string;
@@ -44,6 +45,7 @@ interface LeaderboardPayload {
 
 interface RoomViewPayload {
   roomCode: string;
+  mode: RoomMode;
   phase: RoomPhase;
   youRole: Role;
   yourProfile: PlayerProfile;
@@ -52,8 +54,9 @@ interface RoomViewPayload {
   yourTurn: boolean;
   shotsLeft: number;
   turnSecondsLeft: number;
+  matchSecondsLeft: number;
   round: number;
-  winner: "you" | "opponent" | null;
+  winner: "you" | "opponent" | "draw" | null;
   playerRadar: TurnMark[][];
   defenseRadar: TurnMark[][];
   playerShipGrid: number[][];
@@ -130,6 +133,7 @@ export default function PvpPage() {
   const [socketConnected, setSocketConnected] = useState(false);
   const [socketId, setSocketId] = useState("-");
   const [joinCode, setJoinCode] = useState("");
+  const [roomMode, setRoomMode] = useState<RoomMode>("classic");
   const [profileName, setProfileName] = useState<string>(() => readStoredPvpProfile().name);
   const [profileCity, setProfileCity] = useState<string>(() => readStoredPvpProfile().city);
   const [showDefenseLayer, setShowDefenseLayer] = useState(false);
@@ -163,6 +167,7 @@ export default function PvpPage() {
 
     socket.on("room:state", (payload: RoomViewPayload) => {
       setRoomView(payload);
+      setRoomMode(payload.mode);
       setJoinCode(payload.roomCode);
       setNotice(payload.status);
     });
@@ -239,10 +244,16 @@ export default function PvpPage() {
     roomView?.phase === "lobby" &&
     roomView.youRole === "host" &&
     roomView.opponentConnected;
+  const canChangeMode =
+    roomView?.phase === "lobby" && roomView.youRole === "host" && socketConnected;
   const turnTimerCritical =
     roomView?.phase === "playing" &&
     roomView.yourTurn &&
     (roomView.turnSecondsLeft ?? 0) <= 6;
+  const matchTimerCritical =
+    roomView?.phase === "playing" &&
+    roomView.mode === "blitz3m" &&
+    (roomView.matchSecondsLeft ?? 0) <= 30;
 
   function setError(message: string): void {
     setNotice(message);
@@ -265,6 +276,22 @@ export default function PvpPage() {
         setProfileName(response.profile.name);
         setProfileCity(response.profile.city);
         setNotice(`Profile saved: ${response.profile.name} (${response.profile.city})`);
+      }
+    );
+  }
+
+  function changeMode(nextMode: RoomMode): void {
+    const socket = socketRef.current;
+    if (!socket) return;
+    socket.emit(
+      "room:setMode",
+      { mode: nextMode },
+      (response: RoomActionAck): void => {
+        if (!response.ok) {
+          setError(response.error ?? "Failed to change mode.");
+          return;
+        }
+        setRoomMode(nextMode);
       }
     );
   }
@@ -363,6 +390,34 @@ export default function PvpPage() {
 
       <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
         <h2 className="mb-3 text-lg font-semibold text-cyan-100">Lobby</h2>
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-cyan-100/90">Mode:</span>
+          <button
+            onClick={() => changeMode("classic")}
+            disabled={!canChangeMode}
+            className={`rounded-lg px-3 py-1 transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              roomMode === "classic"
+                ? "bg-cyan-500 text-slate-950"
+                : "bg-slate-900/80 text-cyan-100 hover:bg-slate-800"
+            }`}
+          >
+            Classic
+          </button>
+          <button
+            onClick={() => changeMode("blitz3m")}
+            disabled={!canChangeMode}
+            className={`rounded-lg px-3 py-1 transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              roomMode === "blitz3m"
+                ? "bg-cyan-500 text-slate-950"
+                : "bg-slate-900/80 text-cyan-100 hover:bg-slate-800"
+            }`}
+          >
+            Blitz 3m
+          </button>
+          <span className="text-xs text-cyan-300/70">
+            Blitz winner is decided by decks left, then hits, then accuracy.
+          </span>
+        </div>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <input
             value={profileName}
@@ -457,6 +512,9 @@ export default function PvpPage() {
             Phase: {roomView?.phase ?? "-"}
           </span>
           <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
+            Mode: {roomView?.mode ?? roomMode}
+          </span>
+          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
             Round: {roomView?.round ?? "-"}
           </span>
           <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
@@ -474,6 +532,16 @@ export default function PvpPage() {
           >
             Turn timer: {roomView?.yourTurn ? `${roomView.turnSecondsLeft}s` : "-"}
           </span>
+          <span
+            className={`rounded-full border px-3 py-1 ${
+              matchTimerCritical
+                ? "border-amber-300/70 bg-amber-400/20 text-amber-100"
+                : "border-cyan-900/60 bg-slate-900/80 text-cyan-100/90"
+            }`}
+          >
+            Match timer:{" "}
+            {roomView?.mode === "blitz3m" ? `${roomView.matchSecondsLeft}s` : "-"}
+          </span>
           <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
             Your decks: {roomView?.yourDecksLeft ?? 0}
           </span>
@@ -482,7 +550,7 @@ export default function PvpPage() {
           </span>
           {roomView?.winner && (
             <span className="rounded-full bg-amber-500/20 px-3 py-1 text-amber-100">
-              Winner: {roomView.winner}
+              Winner: {roomView.winner === "draw" ? "draw" : roomView.winner}
             </span>
           )}
         </div>
