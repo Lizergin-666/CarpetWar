@@ -122,6 +122,36 @@ function countMisses(radar: TurnMark[][]): number {
   return misses;
 }
 
+function deriveShipHits(
+  shipGrid: number[][],
+  defenseRadar: TurnMark[][],
+  waterValue: number
+): number[] {
+  let maxShipId = -1;
+  for (let row = 0; row < shipGrid.length; row += 1) {
+    for (let col = 0; col < shipGrid[row].length; col += 1) {
+      const shipId = shipGrid[row][col];
+      if (shipId !== waterValue) {
+        maxShipId = Math.max(maxShipId, shipId);
+      }
+    }
+  }
+
+  if (maxShipId < 0) return [];
+
+  const hits = Array.from({ length: maxShipId + 1 }, () => 0);
+  for (let row = 0; row < shipGrid.length; row += 1) {
+    for (let col = 0; col < shipGrid[row].length; col += 1) {
+      const shipId = shipGrid[row][col];
+      if (shipId === waterValue) continue;
+      if (defenseRadar[row]?.[col] === "hit") {
+        hits[shipId] += 1;
+      }
+    }
+  }
+  return hits;
+}
+
 function readStoredPvpProfile(): PlayerProfile {
   if (typeof window === "undefined") {
     return { name: "", city: "" };
@@ -346,6 +376,12 @@ export default function PvpPage() {
   const playerRadar = roomView?.playerRadar ?? createGrid<TurnMark>("unknown");
   const defenseRadar = roomView?.defenseRadar ?? createGrid<TurnMark>("unknown");
   const playerShipGrid = roomView?.playerShipGrid ?? createGrid<number>(WATER);
+  const playerShipHits = useMemo(
+    () => deriveShipHits(playerShipGrid, defenseRadar, WATER),
+    [defenseRadar, playerShipGrid]
+  );
+  const hiddenEnemyShipGrid = useMemo(() => createGrid<number>(WATER), []);
+  const hiddenEnemyShipHits = useMemo(() => [] as number[], []);
   const canShoot =
     roomView?.phase === "playing" &&
     roomView.yourTurn &&
@@ -741,6 +777,9 @@ export default function PvpPage() {
           attackRadar={playerRadar}
           defenseRadar={defenseRadar}
           shipGrid={playerShipGrid}
+          playerShipHits={playerShipHits}
+          enemyShipGrid={hiddenEnemyShipGrid}
+          enemyShipHits={hiddenEnemyShipHits}
           showDefenseLayer={showDefenseLayer}
           canShoot={canShoot}
           onCellClick={handleCellClick}
