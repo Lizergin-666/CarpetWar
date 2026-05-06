@@ -12,8 +12,9 @@ import {
 const IMAGE_WIDTH = 1448;
 const IMAGE_HEIGHT = 1086;
 const GRID_SIZE = 10;
+const EDGE_POINT_COUNT = GRID_SIZE + 1;
 
-type CornerKey = "topLeft" | "topRight" | "bottomRight" | "bottomLeft";
+type EdgeKey = "top" | "right" | "bottom" | "left";
 
 interface Point {
   x: number;
@@ -27,22 +28,26 @@ interface Quad {
   bottomLeft: Point;
 }
 
-const CORNER_KEYS: CornerKey[] = ["topLeft", "topRight", "bottomRight", "bottomLeft"];
-const CORNER_LABELS: Record<CornerKey, string> = {
-  topLeft: "TL",
-  topRight: "TR",
-  bottomRight: "BR",
-  bottomLeft: "BL",
-};
+interface BoundaryControl {
+  top: Point[];
+  right: Point[];
+  bottom: Point[];
+  left: Point[];
+}
 
-const DEFAULT_BOARD_QUAD: Quad = {
+interface PerimeterHandle {
+  edge: EdgeKey;
+  index: number;
+}
+
+const DEFAULT_STORAGE_KEY = "sea-war.carpet-board-boundary.v2";
+
+const DEFAULT_QUAD: Quad = {
   topLeft: { x: 411, y: 285 },
   topRight: { x: 986, y: 264 },
   bottomRight: { x: 1126, y: 780 },
   bottomLeft: { x: 444, y: 823 },
 };
-
-const DEFAULT_STORAGE_KEY = "sea-war.carpet-board-quad.v1";
 
 export type BoardMark = "unknown" | "miss" | "hit";
 
@@ -57,15 +62,6 @@ interface CarpetBoardProps {
   calibrationStorageKey?: string;
 }
 
-function cloneQuad(quad: Quad): Quad {
-  return {
-    topLeft: { ...quad.topLeft },
-    topRight: { ...quad.topRight },
-    bottomRight: { ...quad.bottomRight },
-    bottomLeft: { ...quad.bottomLeft },
-  };
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -74,28 +70,145 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-function bilinearPoint(quad: Quad, u: number, v: number): Point {
-  const topX = lerp(quad.topLeft.x, quad.topRight.x, u);
-  const topY = lerp(quad.topLeft.y, quad.topRight.y, u);
-  const bottomX = lerp(quad.bottomLeft.x, quad.bottomRight.x, u);
-  const bottomY = lerp(quad.bottomLeft.y, quad.bottomRight.y, u);
-
+function lerpPoint(a: Point, b: Point, t: number): Point {
   return {
-    x: lerp(topX, bottomX, v),
-    y: lerp(topY, bottomY, v),
+    x: lerp(a.x, b.x, t),
+    y: lerp(a.y, b.y, t),
   };
 }
 
-function cellCorners(quad: Quad, row: number, col: number): [Point, Point, Point, Point] {
+function clonePoint(point: Point): Point {
+  return { x: point.x, y: point.y };
+}
+
+function cloneBoundary(boundary: BoundaryControl): BoundaryControl {
+  return {
+    top: boundary.top.map(clonePoint),
+    right: boundary.right.map(clonePoint),
+    bottom: boundary.bottom.map(clonePoint),
+    left: boundary.left.map(clonePoint),
+  };
+}
+
+function makeEdgePoints(start: Point, end: Point): Point[] {
+  return Array.from({ length: EDGE_POINT_COUNT }, (_, index) => {
+    const t = index / GRID_SIZE;
+    return lerpPoint(start, end, t);
+  });
+}
+
+function createDefaultBoundary(): BoundaryControl {
+  return {
+    top: makeEdgePoints(DEFAULT_QUAD.topLeft, DEFAULT_QUAD.topRight),
+    right: makeEdgePoints(DEFAULT_QUAD.topRight, DEFAULT_QUAD.bottomRight),
+    bottom: makeEdgePoints(DEFAULT_QUAD.bottomLeft, DEFAULT_QUAD.bottomRight),
+    left: makeEdgePoints(DEFAULT_QUAD.topLeft, DEFAULT_QUAD.bottomLeft),
+  };
+}
+
+function parseStoredBoundary(raw: string | null): BoundaryControl | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<BoundaryControl>;
+    if (!parsed.top || !parsed.right || !parsed.bottom || !parsed.left) return null;
+    if (
+      parsed.top.length !== EDGE_POINT_COUNT ||
+      parsed.right.length !== EDGE_POINT_COUNT ||
+      parsed.bottom.length !== EDGE_POINT_COUNT ||
+      parsed.left.length !== EDGE_POINT_COUNT
+    ) {
+      return null;
+    }
+
+    const toPoint = (value: unknown): Point | null => {
+      if (!value || typeof value !== "object") return null;
+      const point = value as Partial<Point>;
+      if (typeof point.x !== "number" || typeof point.y !== "number") return null;
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+      return { x: point.x, y: point.y };
+    };
+
+    const top = parsed.top.map(toPoint);
+    const right = parsed.right.map(toPoint);
+    const bottom = parsed.bottom.map(toPoint);
+    const left = parsed.left.map(toPoint);
+    if (
+      top.some((point) => point === null) ||
+      right.some((point) => point === null) ||
+      bottom.some((point) => point === null) ||
+      left.some((point) => point === null)
+    ) {
+      return null;
+    }
+
+    return {
+      top: top as Point[],
+      right: right as Point[],
+      bottom: bottom as Point[],
+      left: left as Point[],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function loadInitialBoundary(storageKey: string): BoundaryControl {
+  const fallback = createDefaultBoundary();
+  if (typeof window === "undefined") return fallback;
+  const fromStorage = parseStoredBoundary(localStorage.getItem(storageKey));
+  return fromStorage ?? fallback;
+}
+
+function sampleEdge(points: Point[], t: number): Point {
+  const u = clamp(t, 0, 1) * GRID_SIZE;
+  const index = Math.floor(u);
+  const nextIndex = Math.min(GRID_SIZE, index + 1);
+  const localT = u - index;
+  return lerpPoint(points[index], points[nextIndex], localT);
+}
+
+function coonsPoint(boundary: BoundaryControl, u: number, v: number): Point {
+  const top = sampleEdge(boundary.top, u);
+  const bottom = sampleEdge(boundary.bottom, u);
+  const left = sampleEdge(boundary.left, v);
+  const right = sampleEdge(boundary.right, v);
+
+  const topLeft = boundary.top[0];
+  const topRight = boundary.top[GRID_SIZE];
+  const bottomRight = boundary.bottom[GRID_SIZE];
+  const bottomLeft = boundary.bottom[0];
+
+  const bilinearX =
+    (1 - u) * (1 - v) * topLeft.x +
+    u * (1 - v) * topRight.x +
+    u * v * bottomRight.x +
+    (1 - u) * v * bottomLeft.x;
+  const bilinearY =
+    (1 - u) * (1 - v) * topLeft.y +
+    u * (1 - v) * topRight.y +
+    u * v * bottomRight.y +
+    (1 - u) * v * bottomLeft.y;
+
+  return {
+    x: (1 - v) * top.x + v * bottom.x + (1 - u) * left.x + u * right.x - bilinearX,
+    y: (1 - v) * top.y + v * bottom.y + (1 - u) * left.y + u * right.y - bilinearY,
+  };
+}
+
+function cellCorners(
+  boundary: BoundaryControl,
+  row: number,
+  col: number
+): [Point, Point, Point, Point] {
   const u0 = col / GRID_SIZE;
   const u1 = (col + 1) / GRID_SIZE;
   const v0 = row / GRID_SIZE;
   const v1 = (row + 1) / GRID_SIZE;
   return [
-    bilinearPoint(quad, u0, v0),
-    bilinearPoint(quad, u1, v0),
-    bilinearPoint(quad, u1, v1),
-    bilinearPoint(quad, u0, v1),
+    coonsPoint(boundary, u0, v0),
+    coonsPoint(boundary, u1, v0),
+    coonsPoint(boundary, u1, v1),
+    coonsPoint(boundary, u0, v1),
   ];
 }
 
@@ -103,76 +216,54 @@ function polygonToString(points: Point[]): string {
   return points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
 }
 
-function centerPoint(quad: Quad, row: number, col: number): Point {
-  return bilinearPoint(quad, (col + 0.5) / GRID_SIZE, (row + 0.5) / GRID_SIZE);
+function centerPoint(boundary: BoundaryControl, row: number, col: number): Point {
+  return coonsPoint(boundary, (col + 0.5) / GRID_SIZE, (row + 0.5) / GRID_SIZE);
 }
 
-function parseStoredQuad(raw: string | null): Quad | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<Record<CornerKey, Partial<Point>>>;
-    const topLeft = parsed.topLeft;
-    const topRight = parsed.topRight;
-    const bottomRight = parsed.bottomRight;
-    const bottomLeft = parsed.bottomLeft;
-
-    if (!topLeft || !topRight || !bottomRight || !bottomLeft) return null;
-    if (
-      typeof topLeft.x !== "number" ||
-      typeof topLeft.y !== "number" ||
-      typeof topRight.x !== "number" ||
-      typeof topRight.y !== "number" ||
-      typeof bottomRight.x !== "number" ||
-      typeof bottomRight.y !== "number" ||
-      typeof bottomLeft.x !== "number" ||
-      typeof bottomLeft.y !== "number"
-    ) {
-      return null;
-    }
-    if (
-      !Number.isFinite(topLeft.x) ||
-      !Number.isFinite(topLeft.y) ||
-      !Number.isFinite(topRight.x) ||
-      !Number.isFinite(topRight.y) ||
-      !Number.isFinite(bottomRight.x) ||
-      !Number.isFinite(bottomRight.y) ||
-      !Number.isFinite(bottomLeft.x) ||
-      !Number.isFinite(bottomLeft.y)
-    ) {
-      return null;
-    }
-
-    return {
-      topLeft: { x: topLeft.x, y: topLeft.y },
-      topRight: { x: topRight.x, y: topRight.y },
-      bottomRight: { x: bottomRight.x, y: bottomRight.y },
-      bottomLeft: { x: bottomLeft.x, y: bottomLeft.y },
-    };
-  } catch {
-    return null;
-  }
+function allPerimeterHandles(): PerimeterHandle[] {
+  const top = Array.from({ length: EDGE_POINT_COUNT }, (_, index) => ({
+    edge: "top" as const,
+    index,
+  }));
+  const right = Array.from({ length: GRID_SIZE }, (_, index) => ({
+    edge: "right" as const,
+    index: index + 1,
+  }));
+  const bottom = Array.from({ length: GRID_SIZE }, (_, index) => ({
+    edge: "bottom" as const,
+    index: GRID_SIZE - 1 - index,
+  }));
+  const left = Array.from({ length: GRID_SIZE - 1 }, (_, index) => ({
+    edge: "left" as const,
+    index: GRID_SIZE - 1 - index,
+  }));
+  return [...top, ...right, ...bottom, ...left];
 }
 
-function loadInitialQuad(storageKey: string): Quad {
-  if (typeof window === "undefined") return cloneQuad(DEFAULT_BOARD_QUAD);
-  const fromStorage = parseStoredQuad(localStorage.getItem(storageKey));
-  return fromStorage ? fromStorage : cloneQuad(DEFAULT_BOARD_QUAD);
-}
+const PERIMETER_HANDLES = allPerimeterHandles();
 
-function quadToString(quad: Quad): string {
-  return JSON.stringify(
-    {
-      topLeft: { x: Math.round(quad.topLeft.x), y: Math.round(quad.topLeft.y) },
-      topRight: { x: Math.round(quad.topRight.x), y: Math.round(quad.topRight.y) },
-      bottomRight: {
-        x: Math.round(quad.bottomRight.x),
-        y: Math.round(quad.bottomRight.y),
-      },
-      bottomLeft: { x: Math.round(quad.bottomLeft.x), y: Math.round(quad.bottomLeft.y) },
-    },
-    null,
-    2
-  );
+function setBoundaryPoint(
+  boundary: BoundaryControl,
+  edge: EdgeKey,
+  index: number,
+  point: Point
+): BoundaryControl {
+  const next = cloneBoundary(boundary);
+  next[edge][index] = point;
+
+  if (edge === "top" && index === 0) next.left[0] = clonePoint(point);
+  if (edge === "left" && index === 0) next.top[0] = clonePoint(point);
+
+  if (edge === "top" && index === GRID_SIZE) next.right[0] = clonePoint(point);
+  if (edge === "right" && index === 0) next.top[GRID_SIZE] = clonePoint(point);
+
+  if (edge === "right" && index === GRID_SIZE) next.bottom[GRID_SIZE] = clonePoint(point);
+  if (edge === "bottom" && index === GRID_SIZE) next.right[GRID_SIZE] = clonePoint(point);
+
+  if (edge === "bottom" && index === 0) next.left[GRID_SIZE] = clonePoint(point);
+  if (edge === "left" && index === GRID_SIZE) next.bottom[0] = clonePoint(point);
+
+  return next;
 }
 
 export function CarpetBoard({
@@ -186,23 +277,23 @@ export function CarpetBoard({
   calibrationStorageKey = DEFAULT_STORAGE_KEY,
 }: CarpetBoardProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const [savedQuad, setSavedQuad] = useState<Quad>(() =>
-    loadInitialQuad(calibrationStorageKey)
+  const [savedBoundary, setSavedBoundary] = useState<BoundaryControl>(() =>
+    loadInitialBoundary(calibrationStorageKey)
   );
-  const [draftQuad, setDraftQuad] = useState<Quad>(() =>
-    loadInitialQuad(calibrationStorageKey)
+  const [draftBoundary, setDraftBoundary] = useState<BoundaryControl>(() =>
+    loadInitialBoundary(calibrationStorageKey)
   );
   const [isCalibrating, setIsCalibrating] = useState(false);
-  const [activeCorner, setActiveCorner] = useState<CornerKey | null>(null);
+  const [activeHandle, setActiveHandle] = useState<PerimeterHandle | null>(null);
 
-  const boardQuad = isCalibrating ? draftQuad : savedQuad;
+  const boardBoundary = isCalibrating ? draftBoundary : savedBoundary;
 
   const cells: ReactNode[] = useMemo(() => {
     return Array.from({ length: GRID_SIZE }, (_, row) =>
       Array.from({ length: GRID_SIZE }, (_, col) => {
-        const corners = cellCorners(boardQuad, row, col);
+        const corners = cellCorners(boardBoundary, row, col);
         const pointsString = polygonToString(corners);
-        const center = centerPoint(boardQuad, row, col);
+        const center = centerPoint(boardBoundary, row, col);
 
         const attackMark = attackRadar[row]?.[col] ?? "unknown";
         const defenseMark = defenseRadar[row]?.[col] ?? "unknown";
@@ -225,7 +316,7 @@ export function CarpetBoard({
             <polygon
               points={pointsString}
               fill={layerFill}
-              stroke={isCalibrating ? "rgba(255, 255, 255, 0.25)" : "rgba(0,0,0,0)"}
+              stroke={isCalibrating ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0)"}
               strokeWidth={isCalibrating ? 1.2 : 0}
               className={
                 canClick
@@ -255,7 +346,7 @@ export function CarpetBoard({
     ).flat();
   }, [
     attackRadar,
-    boardQuad,
+    boardBoundary,
     canShoot,
     defenseRadar,
     isCalibrating,
@@ -271,69 +362,72 @@ export function CarpetBoard({
     const rect = svg.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
 
-    const x = clamp(((clientX - rect.left) * IMAGE_WIDTH) / rect.width, 0, IMAGE_WIDTH);
-    const y = clamp(((clientY - rect.top) * IMAGE_HEIGHT) / rect.height, 0, IMAGE_HEIGHT);
-    return { x, y };
+    return {
+      x: clamp(((clientX - rect.left) * IMAGE_WIDTH) / rect.width, 0, IMAGE_WIDTH),
+      y: clamp(((clientY - rect.top) * IMAGE_HEIGHT) / rect.height, 0, IMAGE_HEIGHT),
+    };
   }
 
-  function moveCornerToPointer(corner: CornerKey, clientX: number, clientY: number): void {
-    const nextPoint = pointerToImagePoint(clientX, clientY);
-    if (!nextPoint) return;
-    setDraftQuad((prev) => ({
-      ...prev,
-      [corner]: nextPoint,
-    }));
+  function moveHandle(edge: EdgeKey, index: number, clientX: number, clientY: number): void {
+    const point = pointerToImagePoint(clientX, clientY);
+    if (!point) return;
+    setDraftBoundary((prev) => setBoundaryPoint(prev, edge, index, point));
   }
 
-  function beginCornerDrag(
-    corner: CornerKey,
-    event: ReactPointerEvent<SVGCircleElement>
-  ): void {
+  function startHandleDrag(handle: PerimeterHandle, event: ReactPointerEvent<SVGCircleElement>) {
     if (!isCalibrating) return;
     event.preventDefault();
     event.stopPropagation();
-    setActiveCorner(corner);
-    moveCornerToPointer(corner, event.clientX, event.clientY);
+    setActiveHandle(handle);
+    moveHandle(handle.edge, handle.index, event.clientX, event.clientY);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Ignore unsupported pointer capture.
+    }
   }
 
-  function handleSvgPointerMove(event: ReactPointerEvent<SVGSVGElement>): void {
-    if (!isCalibrating || !activeCorner) return;
-    moveCornerToPointer(activeCorner, event.clientX, event.clientY);
+  function stopHandleDrag(): void {
+    setActiveHandle(null);
   }
 
-  function stopCornerDrag(): void {
-    setActiveCorner(null);
+  function onSvgPointerMove(event: ReactPointerEvent<SVGSVGElement>): void {
+    if (!isCalibrating || !activeHandle) return;
+    moveHandle(activeHandle.edge, activeHandle.index, event.clientX, event.clientY);
   }
 
-  function startCalibration(): void {
-    setDraftQuad(cloneQuad(savedQuad));
-    setActiveCorner(null);
+  function beginCalibration(): void {
+    setDraftBoundary(cloneBoundary(savedBoundary));
+    setActiveHandle(null);
     setIsCalibrating(true);
   }
 
-  function cancelCalibration(): void {
-    setDraftQuad(cloneQuad(savedQuad));
-    setActiveCorner(null);
-    setIsCalibrating(false);
-  }
-
   function saveCalibration(): void {
-    const nextSaved = cloneQuad(draftQuad);
-    setSavedQuad(nextSaved);
+    const next = cloneBoundary(draftBoundary);
+    setSavedBoundary(next);
     setIsCalibrating(false);
-    setActiveCorner(null);
-    if (typeof window === "undefined") return;
-    localStorage.setItem(calibrationStorageKey, JSON.stringify(nextSaved));
+    setActiveHandle(null);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(calibrationStorageKey, JSON.stringify(next));
+    }
   }
 
-  function resetCalibrationToDefault(): void {
-    setDraftQuad(cloneQuad(DEFAULT_BOARD_QUAD));
+  function cancelCalibration(): void {
+    setDraftBoundary(cloneBoundary(savedBoundary));
+    setActiveHandle(null);
+    setIsCalibrating(false);
   }
 
-  async function copyCalibrationJson(): Promise<void> {
+  function resetToDefault(): void {
+    setDraftBoundary(createDefaultBoundary());
+  }
+
+  async function copyBoundaryJson(): Promise<void> {
     if (typeof window === "undefined" || !navigator.clipboard) return;
-    await navigator.clipboard.writeText(quadToString(draftQuad));
+    await navigator.clipboard.writeText(JSON.stringify(draftBoundary, null, 2));
   }
+
+  const handles = isCalibrating ? draftBoundary : savedBoundary;
 
   return (
     <div className="mx-auto w-full max-w-[920px]">
@@ -350,38 +444,28 @@ export function CarpetBoard({
           ref={svgRef}
           viewBox={`0 0 ${IMAGE_WIDTH} ${IMAGE_HEIGHT}`}
           className="absolute inset-0 h-full w-full touch-none"
-          onPointerMove={handleSvgPointerMove}
-          onPointerUp={stopCornerDrag}
-          onPointerCancel={stopCornerDrag}
-          onPointerLeave={stopCornerDrag}
+          onPointerMove={onSvgPointerMove}
+          onPointerUp={stopHandleDrag}
+          onPointerCancel={stopHandleDrag}
+          onPointerLeave={stopHandleDrag}
           aria-hidden="true"
         >
           {cells}
           {isCalibrating &&
-            CORNER_KEYS.map((corner) => {
-              const point = draftQuad[corner];
+            PERIMETER_HANDLES.map((handle) => {
+              const point = handles[handle.edge][handle.index];
               return (
-                <g key={`corner-${corner}`}>
-                  <circle
-                    cx={point.x}
-                    cy={point.y}
-                    r={14}
-                    fill="rgba(34, 211, 238, 0.9)"
-                    stroke="rgba(8, 47, 73, 0.95)"
-                    strokeWidth={3}
-                    className="cursor-grab active:cursor-grabbing"
-                    onPointerDown={(event) => beginCornerDrag(corner, event)}
-                  />
-                  <text
-                    x={point.x + 16}
-                    y={point.y - 12}
-                    fontSize={18}
-                    fontWeight={700}
-                    fill="rgba(34, 211, 238, 0.95)"
-                  >
-                    {CORNER_LABELS[corner]}
-                  </text>
-                </g>
+                <circle
+                  key={`${handle.edge}-${handle.index}`}
+                  cx={point.x}
+                  cy={point.y}
+                  r={8}
+                  fill="rgba(34, 211, 238, 0.92)"
+                  stroke="rgba(8, 47, 73, 0.95)"
+                  strokeWidth={2.5}
+                  className="cursor-grab active:cursor-grabbing"
+                  onPointerDown={(event) => startHandleDrag(handle, event)}
+                />
               );
             })}
         </svg>
@@ -390,10 +474,10 @@ export function CarpetBoard({
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs sm:text-sm">
         {!isCalibrating ? (
           <button
-            onClick={startCalibration}
+            onClick={beginCalibration}
             className="rounded-md border border-cyan-500/70 bg-cyan-500/20 px-3 py-1 text-cyan-100 transition hover:bg-cyan-500/30"
           >
-            Calibrate 4 corners
+            Calibrate perimeter points
           </button>
         ) : (
           <>
@@ -410,21 +494,21 @@ export function CarpetBoard({
               Cancel
             </button>
             <button
-              onClick={resetCalibrationToDefault}
+              onClick={resetToDefault}
               className="rounded-md border border-amber-500/70 bg-amber-500/20 px-3 py-1 text-amber-100 transition hover:bg-amber-500/30"
             >
               Reset default
             </button>
             <button
               onClick={() => {
-                void copyCalibrationJson();
+                void copyBoundaryJson();
               }}
               className="rounded-md border border-violet-500/70 bg-violet-500/20 px-3 py-1 text-violet-100 transition hover:bg-violet-500/30"
             >
-              Copy quad JSON
+              Copy boundary JSON
             </button>
             <span className="text-cyan-200/80">
-              Drag TL, TR, BR, BL handles to match grid corners, then Save.
+              Drag every perimeter point to align stripes on all 4 sides, then Save.
             </span>
           </>
         )}
