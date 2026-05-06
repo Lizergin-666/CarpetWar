@@ -220,6 +220,22 @@ function centerPoint(boundary: BoundaryControl, row: number, col: number): Point
   return coonsPoint(boundary, (col + 0.5) / GRID_SIZE, (row + 0.5) / GRID_SIZE);
 }
 
+function distance(a: Point, b: Point): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function missMarkSize(corners: [Point, Point, Point, Point]): number {
+  const topWidth = distance(corners[0], corners[1]);
+  const bottomWidth = distance(corners[3], corners[2]);
+  const leftHeight = distance(corners[0], corners[3]);
+  const rightHeight = distance(corners[1], corners[2]);
+  const avgWidth = (topWidth + bottomWidth) / 2;
+  const avgHeight = (leftHeight + rightHeight) / 2;
+  return Math.max(16, Math.min(avgWidth, avgHeight) * 0.86);
+}
+
 function allPerimeterHandles(): PerimeterHandle[] {
   const top = Array.from({ length: EDGE_POINT_COUNT }, (_, index) => ({
     edge: "top" as const,
@@ -294,6 +310,7 @@ export function CarpetBoard({
         const corners = cellCorners(boardBoundary, row, col);
         const pointsString = polygonToString(corners);
         const center = centerPoint(boardBoundary, row, col);
+        const holeSize = missMarkSize(corners);
 
         const attackMark = attackRadar[row]?.[col] ?? "unknown";
         const defenseMark = defenseRadar[row]?.[col] ?? "unknown";
@@ -338,7 +355,16 @@ export function CarpetBoard({
               />
             )}
             {attackMark === "miss" && (
-              <circle cx={center.x} cy={center.y} r={7} fill="rgba(241, 245, 249, 0.95)" />
+              <image
+                href="/hole-mark.png"
+                x={center.x - holeSize / 2}
+                y={center.y - holeSize / 2}
+                width={holeSize}
+                height={holeSize}
+                preserveAspectRatio="xMidYMid meet"
+                opacity={0.96}
+                style={{ pointerEvents: "none", mixBlendMode: "multiply" }}
+              />
             )}
           </g>
         );

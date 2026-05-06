@@ -11,6 +11,7 @@ const SHOTS_PER_TURN = 3;
 const BOT_TURN_DELAY_MS = 750;
 const PLAYER_TURN_SECONDS = 20;
 const WATER = -1;
+const MISS_SOUND_URL = "/sound/smash1.mp3";
 const HISTORY_LIMIT = 25;
 const STORAGE_HISTORY_KEY = "sea-war.match-history.v1";
 const STORAGE_DIFFICULTY_KEY = "sea-war.bot-difficulty.v1";
@@ -236,6 +237,16 @@ function countRemainingDecks(shipHits: number[], shipLengths: number[]): number 
   return shipLengths.reduce((sum, length, index) => {
     return sum + Math.max(0, length - shipHits[index]);
   }, 0);
+}
+
+function countMisses(radar: Mark[][]): number {
+  let misses = 0;
+  for (const row of radar) {
+    for (const mark of row) {
+      if (mark === "miss") misses += 1;
+    }
+  }
+  return misses;
 }
 
 function formatCoord(row: number, col: number): string {
@@ -681,6 +692,8 @@ export default function Home() {
   const savedResultGameIdRef = useRef<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const turnDeadlineMsRef = useRef<number | null>(null);
+  const missSoundRef = useRef<HTMLAudioElement | null>(null);
+  const missCountRef = useRef<number>(0);
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
@@ -733,6 +746,19 @@ export default function Home() {
   }, [socketUrl]);
 
   useEffect(() => {
+    const audio = new Audio(MISS_SOUND_URL);
+    audio.preload = "auto";
+    audio.volume = 0.65;
+    missSoundRef.current = audio;
+    return () => {
+      if (!missSoundRef.current) return;
+      missSoundRef.current.pause();
+      missSoundRef.current.src = "";
+      missSoundRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(STORAGE_DIFFICULTY_KEY, botDifficulty);
     } catch {
@@ -747,6 +773,24 @@ export default function Home() {
       // Ignore storage failures.
     }
   }, [history]);
+
+  useEffect(() => {
+    const currentMisses = countMisses(game.playerRadar);
+    const previousMisses = missCountRef.current;
+    if (currentMisses > previousMisses) {
+      const burst = currentMisses - previousMisses;
+      for (let i = 0; i < burst; i += 1) {
+        const base = missSoundRef.current;
+        if (!base) break;
+        const instance = base.cloneNode(true) as HTMLAudioElement;
+        instance.volume = base.volume;
+        void instance.play().catch(() => {
+          // Ignore autoplay/user-gesture restrictions.
+        });
+      }
+    }
+    missCountRef.current = currentMisses;
+  }, [game.playerRadar]);
 
   useEffect(() => {
     if (game.turn !== "player" || game.winner !== null) {

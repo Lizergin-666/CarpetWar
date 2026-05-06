@@ -8,6 +8,7 @@ import { CarpetBoard } from "../../components/CarpetBoard";
 
 const BOARD_SIZE = 10;
 const WATER = -1;
+const MISS_SOUND_URL = "/sound/smash1.mp3";
 const STORAGE_PVP_PROFILE_KEY = "sea-war.pvp-profile.v1";
 
 type TurnMark = "unknown" | "miss" | "hit";
@@ -109,6 +110,16 @@ function countRadarMarks(radar: TurnMark[][]): { shots: number; hits: number } {
   return { shots, hits };
 }
 
+function countMisses(radar: TurnMark[][]): number {
+  let misses = 0;
+  for (const row of radar) {
+    for (const mark of row) {
+      if (mark === "miss") misses += 1;
+    }
+  }
+  return misses;
+}
+
 function readStoredPvpProfile(): PlayerProfile {
   if (typeof window === "undefined") {
     return { name: "", city: "" };
@@ -162,6 +173,8 @@ export default function PvpPage() {
   const [systemLog, setSystemLog] = useState<string[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const autoJoinTriedRef = useRef(false);
+  const missSoundRef = useRef<HTMLAudioElement | null>(null);
+  const missCountRef = useRef<number>(0);
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
@@ -235,6 +248,19 @@ export default function PvpPage() {
   }, [socketUrl]);
 
   useEffect(() => {
+    const audio = new Audio(MISS_SOUND_URL);
+    audio.preload = "auto";
+    audio.volume = 0.65;
+    missSoundRef.current = audio;
+    return () => {
+      if (!missSoundRef.current) return;
+      missSoundRef.current.pause();
+      missSoundRef.current.src = "";
+      missSoundRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!socketConnected) return;
     const storedProfile = readStoredPvpProfile();
     socketRef.current?.emit("player:profile", {
@@ -253,6 +279,26 @@ export default function PvpPage() {
       // Ignore storage failures.
     }
   }, [profileCity, profileName]);
+
+  useEffect(() => {
+    const currentMisses = roomView?.playerRadar
+      ? countMisses(roomView.playerRadar)
+      : 0;
+    const previousMisses = missCountRef.current;
+    if (currentMisses > previousMisses) {
+      const burst = currentMisses - previousMisses;
+      for (let i = 0; i < burst; i += 1) {
+        const base = missSoundRef.current;
+        if (!base) break;
+        const instance = base.cloneNode(true) as HTMLAudioElement;
+        instance.volume = base.volume;
+        void instance.play().catch(() => {
+          // Ignore autoplay/user-gesture restrictions.
+        });
+      }
+    }
+    missCountRef.current = currentMisses;
+  }, [roomView?.playerRadar]);
 
   const coachReport: CoachReport | null = useMemo(() => {
     if (!roomView) return null;
