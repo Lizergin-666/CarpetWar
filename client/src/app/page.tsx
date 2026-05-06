@@ -3,6 +3,7 @@
 import { io, Socket } from "socket.io-client";
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createClient, type User } from "@supabase/supabase-js";
 import { buildSoloCoach, CoachReport } from "../lib/coach";
 import { CarpetBoard } from "../components/CarpetBoard";
 
@@ -19,6 +20,7 @@ const HISTORY_LIMIT = 25;
 const STORAGE_HISTORY_KEY = "sea-war.match-history.v1";
 const STORAGE_DIFFICULTY_KEY = "sea-war.bot-difficulty.v1";
 const STORAGE_SOUND_ENABLED_KEY = "sea-war.sound-enabled.v1";
+const STORAGE_PVP_PROFILE_KEY = "sea-war.pvp-profile.v1";
 const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
 const UI_LOGO_URL = "/ui/logo-main.png";
 const UI_MENU_BUTTON_URL = "/ui/btn-menu.png";
@@ -44,6 +46,51 @@ type Turn = "player" | "bot" | "finished";
 type Mark = "unknown" | "miss" | "hit";
 type BotDifficulty = "easy" | "medium" | "hard";
 type StartPanel = "online" | "level";
+type GameMode = "solo" | "online";
+type RoomPhase = "lobby" | "playing" | "finished";
+type Role = "host" | "guest";
+type RoomMode = "classic" | "blitz3m";
+
+interface PlayerProfile {
+  name: string;
+  city: string;
+}
+
+interface RoomViewPayload {
+  roomCode: string;
+  mode: RoomMode;
+  phase: RoomPhase;
+  youRole: Role;
+  yourProfile: PlayerProfile;
+  opponentProfile: PlayerProfile | null;
+  opponentConnected: boolean;
+  yourTurn: boolean;
+  shotsLeft: number;
+  turnSecondsLeft: number;
+  matchSecondsLeft: number;
+  round: number;
+  winner: "you" | "opponent" | "draw" | null;
+  canRematch: boolean;
+  youRequestedRematch: boolean;
+  opponentRequestedRematch: boolean;
+  playerRadar: Mark[][];
+  defenseRadar: Mark[][];
+  playerShipGrid: number[][];
+  yourDecksLeft: number;
+  enemyDecksLeft: number;
+  status: string;
+  log: string[];
+}
+
+interface RoomActionAck {
+  ok: boolean;
+  error?: string;
+  roomCode?: string;
+}
+
+interface RoomClosedPayload {
+  reason?: string;
+}
 
 interface Placement {
   shipGrid: number[][];
@@ -168,6 +215,45 @@ function readStoredHistory(): MatchSummary[] {
   }
 }
 
+function readStoredPvpProfile(): PlayerProfile {
+  if (typeof window === "undefined") {
+    return { name: "", city: "" };
+  }
+
+  try {
+    const raw = localStorage.getItem(STORAGE_PVP_PROFILE_KEY);
+    if (!raw) return { name: "", city: "" };
+    const parsed = JSON.parse(raw) as Partial<PlayerProfile>;
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : "",
+      city: typeof parsed.city === "string" ? parsed.city : "",
+    };
+  } catch {
+    return { name: "", city: "" };
+  }
+}
+
+function sanitizeRoomCode(raw: string): string {
+  return raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+}
+
+function readRoomCodeFromUrl(): string {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  return sanitizeRoomCode(params.get("room") ?? "");
+}
+
+function syncRoomCodeToUrl(roomCode: string | null): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (roomCode) {
+    url.searchParams.set("room", roomCode);
+  } else {
+    url.searchParams.delete("room");
+  }
+  window.history.replaceState({}, "", url.toString());
+}
+
 function createGrid<T>(value: T): T[][] {
   return Array.from({ length: BOARD_SIZE }, () =>
     Array.from({ length: BOARD_SIZE }, () => value)
@@ -279,6 +365,36 @@ function countMisses(radar: Mark[][]): number {
     }
   }
   return misses;
+}
+
+function deriveShipHits(
+  shipGrid: number[][],
+  defenseRadar: Mark[][],
+  waterValue: number
+): number[] {
+  let maxShipId = -1;
+  for (let row = 0; row < shipGrid.length; row += 1) {
+    for (let col = 0; col < shipGrid[row].length; col += 1) {
+      const shipId = shipGrid[row][col];
+      if (shipId !== waterValue) {
+        maxShipId = Math.max(maxShipId, shipId);
+      }
+    }
+  }
+
+  if (maxShipId < 0) return [];
+
+  const hits = Array.from({ length: maxShipId + 1 }, () => 0);
+  for (let row = 0; row < shipGrid.length; row += 1) {
+    for (let col = 0; col < shipGrid[row].length; col += 1) {
+      const shipId = shipGrid[row][col];
+      if (shipId === waterValue) continue;
+      if (defenseRadar[row]?.[col] === "hit") {
+        hits[shipId] += 1;
+      }
+    }
+  }
+  return hits;
 }
 
 function formatCoord(row: number, col: number): string {
@@ -702,6 +818,7 @@ function resolveBotSalvo(state: GameState, difficulty: BotDifficulty): GameState
 }
 
 export default function Home() {
+  const [gameMode, setGameMode] = useState<GameMode>("solo");
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>(() =>
     readStoredDifficulty()
   );
@@ -715,20 +832,24 @@ export default function Home() {
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [isStatsOpen, setIsStatsOpen] = useState<boolean>(false);
   const [startPanel, setStartPanel] = useState<StartPanel | null>(null);
+  const [isOnlineLobbyOpen, setIsOnlineLobbyOpen] = useState<boolean>(false);
   const [isDoorOverlayVisible, setIsDoorOverlayVisible] = useState<boolean>(true);
   const [isDoorOpened, setIsDoorOpened] = useState<boolean>(false);
   const [isSceneDimmed, setIsSceneDimmed] = useState<boolean>(true);
 
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
-  const [socketId, setSocketId] = useState<string>("-");
-  const [welcomeMessage, setWelcomeMessage] = useState<string>("-");
-  const [lastPong, setLastPong] = useState<string>("-");
-  const [matchedOpponentId, setMatchedOpponentId] = useState<string | null>(null);
-  const [queueWaiting, setQueueWaiting] = useState<number>(0);
-  const [queueConnected, setQueueConnected] = useState<number>(0);
-  const [socketSystemLog, setSocketSystemLog] = useState<string[]>([]);
+  const [roomView, setRoomView] = useState<RoomViewPayload | null>(null);
+  const [joinCode, setJoinCode] = useState<string>("");
+  const [roomMode, setRoomMode] = useState<RoomMode>("classic");
+  const [onlineNotice, setOnlineNotice] = useState<string>(
+    "Login with Google, then create or join a room."
+  );
+  const [profileName, setProfileName] = useState<string>(() => readStoredPvpProfile().name);
+  const [profileCity, setProfileCity] = useState<string>(() => readStoredPvpProfile().city);
+  const [authUser, setAuthUser] = useState<User | null>(null);
   const savedResultGameIdRef = useRef<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const autoJoinTriedRef = useRef(false);
   const impactSoundRef = useRef<HTMLAudioElement | null>(null);
   const themeSoundRef = useRef<HTMLAudioElement | null>(null);
   const hmmSoundRef = useRef<HTMLAudioElement | null>(null);
@@ -743,6 +864,14 @@ export default function Home() {
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
     []
   );
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabasePublishableKey =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabase = useMemo(() => {
+    if (!supabaseUrl || !supabasePublishableKey) return null;
+    return createClient(supabaseUrl, supabasePublishableKey);
+  }, [supabasePublishableKey, supabaseUrl]);
 
   const tryPlayTheme = useCallback((): void => {
     const theme = themeSoundRef.current;
@@ -784,35 +913,54 @@ export default function Home() {
 
     socket.on("connect", () => {
       setSocketConnected(true);
-      setSocketId(socket.id ?? "-");
+      socket.emit("leaderboard:get");
+
+      if (!autoJoinTriedRef.current) {
+        autoJoinTriedRef.current = true;
+        const urlRoomCode = readRoomCodeFromUrl();
+        if (urlRoomCode) {
+          setJoinCode(urlRoomCode);
+          socket.emit(
+            "room:join",
+            { roomCode: urlRoomCode },
+            (response: RoomActionAck): void => {
+              if (!response.ok) {
+                setOnlineNotice(response.error ?? "Auto-join failed.");
+                return;
+              }
+              setGameMode("online");
+              setOnlineNotice(`Joined room from invite: ${response.roomCode}`);
+              setIsOnlineLobbyOpen(true);
+            }
+          );
+        }
+      }
     });
 
     socket.on("disconnect", () => {
       setSocketConnected(false);
-      setSocketId("-");
     });
 
-    socket.on("server:welcome", (payload: { message: string }) => {
-      setWelcomeMessage(payload.message);
+    socket.on("room:state", (payload: RoomViewPayload) => {
+      setRoomView(payload);
+      setRoomMode(payload.mode);
+      setJoinCode(payload.roomCode);
+      setOnlineNotice(payload.status);
+      setGameMode("online");
+      setIsOnlineLobbyOpen(true);
+      syncRoomCodeToUrl(payload.roomCode);
     });
 
-    socket.on("server:pong", (payload: { serverTime: number }) => {
-      setLastPong(new Date(payload.serverTime).toLocaleTimeString());
-    });
-
-    socket.on("opponent", (opponentId: string | null) => {
-      setMatchedOpponentId(opponentId);
-    });
-
-    socket.on("queue:size", (payload: QueueStatsPayload) => {
-      setQueueWaiting(Math.max(0, payload.waiting));
-      setQueueConnected(Math.max(0, payload.connected));
+    socket.on("room:closed", (payload: RoomClosedPayload) => {
+      setRoomView(null);
+      setOnlineNotice(payload.reason ?? "Room closed.");
+      syncRoomCodeToUrl(null);
     });
 
     socket.on("system", (payload: SystemPayload) => {
       const eventLabel = payload.event ? ` (${payload.event})` : "";
       const item = `${payload.type}${eventLabel}`;
-      setSocketSystemLog((prev) => [item, ...prev].slice(0, 6));
+      setOnlineNotice(item);
     });
 
     return () => {
@@ -894,6 +1042,59 @@ export default function Home() {
   }, [isSoundEnabled]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_PVP_PROFILE_KEY,
+        JSON.stringify({ name: profileName, city: profileCity })
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [profileCity, profileName]);
+
+  useEffect(() => {
+    if (!socketConnected) return;
+    socketRef.current?.emit("player:profile", {
+      name: profileName,
+      city: profileCity,
+    });
+  }, [profileCity, profileName, socketConnected]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        setAuthUser(data.session?.user ?? null);
+      })
+      .catch(() => {
+        setAuthUser(null);
+      });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [supabase]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    if (profileName.trim().length > 0) return;
+    const suggestedName =
+      (authUser.user_metadata?.full_name as string | undefined) ??
+      authUser.email?.split("@")[0] ??
+      "";
+    if (suggestedName.trim().length > 0) {
+      setProfileName(suggestedName.trim());
+    }
+  }, [authUser, profileName]);
+
+  useEffect(() => {
     const openTimer = window.setTimeout(() => {
       setIsDoorOpened(true);
       setIsSceneDimmed(false);
@@ -935,6 +1136,7 @@ export default function Home() {
   }, [isSoundEnabled, tryPlayTheme]);
 
   useEffect(() => {
+    if (gameMode !== "solo") return;
     const prevRadar = radarSnapshotRef.current;
     const prevEnemyHits = enemyShipHitsSnapshotRef.current;
     const nextRadar = game.playerRadar;
@@ -999,6 +1201,7 @@ export default function Home() {
     enemyShipHitsSnapshotRef.current = [...nextEnemyHits];
   }, [
     appendHitEffects,
+    gameMode,
     game.enemyShipGrid,
     game.enemyShipHits,
     game.enemyShipLengths,
@@ -1009,6 +1212,7 @@ export default function Home() {
   ]);
 
   useEffect(() => {
+    if (gameMode !== "solo") return;
     if (game.turn !== "bot") return;
     if (game.winner !== null) return;
     const timer = window.setTimeout(() => {
@@ -1017,9 +1221,10 @@ export default function Home() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [botDifficulty, game.turn, game.winner]);
+  }, [botDifficulty, game.turn, game.winner, gameMode]);
 
   useEffect(() => {
+    if (gameMode !== "solo") return;
     if (game.winner === null) return;
     if (savedResultGameIdRef.current === game.id) return;
 
@@ -1063,6 +1268,7 @@ export default function Home() {
     game.round,
     game.startedAtMs,
     game.winner,
+    gameMode,
   ]);
 
   const playerRemainingDecks = countRemainingDecks(
@@ -1078,6 +1284,31 @@ export default function Home() {
   const totalLosses = totalGames - totalWins;
   const winRate = totalGames > 0 ? Math.round((totalWins / totalGames) * 100) : 0;
   const showDefenseLayer = game.turn === "bot" || (game.turn === "finished" && game.winner === "bot");
+  const onlinePlayerRadar = roomView?.playerRadar ?? createGrid<Mark>("unknown");
+  const onlineDefenseRadar = roomView?.defenseRadar ?? createGrid<Mark>("unknown");
+  const onlineShipGrid = roomView?.playerShipGrid ?? createGrid<number>(WATER);
+  const onlineShipHits = useMemo(
+    () => deriveShipHits(onlineShipGrid, onlineDefenseRadar, WATER),
+    [onlineDefenseRadar, onlineShipGrid]
+  );
+  const hiddenEnemyShipGrid = useMemo(() => createGrid<number>(WATER), []);
+  const hiddenEnemyShipHits = useMemo(() => [] as number[], []);
+  const onlineShowDefenseLayer =
+    roomView?.phase === "playing" ? !roomView.yourTurn : roomView !== null;
+  const onlineCanShoot =
+    gameMode === "online" &&
+    socketConnected &&
+    roomView?.phase === "playing" &&
+    roomView.yourTurn &&
+    roomView.winner === null;
+  const canStartOnlineMatch =
+    roomView?.phase === "lobby" &&
+    roomView.youRole === "host" &&
+    roomView.opponentConnected;
+  const canChangeOnlineMode =
+    roomView?.phase === "lobby" &&
+    roomView.youRole === "host" &&
+    socketConnected;
   const avgPlayerAccuracy =
     totalGames > 0
       ? Math.round(
@@ -1086,22 +1317,43 @@ export default function Home() {
       : 0;
 
   useEffect(() => {
+    if (gameMode !== "solo") return;
     radarSnapshotRef.current = game.playerRadar.map((row) => row.slice());
     enemyShipHitsSnapshotRef.current = [...game.enemyShipHits];
     missEventCountRef.current = 0;
     hitEventCountRef.current = 0;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     resetHitEffects();
-  }, [game.enemyShipHits, game.id, game.playerRadar, resetHitEffects]);
+  }, [game.enemyShipHits, game.id, game.playerRadar, resetHitEffects, gameMode]);
 
   function resetGame(nextDifficulty?: BotDifficulty): void {
     const difficulty = nextDifficulty ?? botDifficulty;
     setGame(createGameState(difficulty));
     setCoachReport(null);
     setHitEffects([]);
+    setGameMode("solo");
+  }
+
+  function handleOnlineShot(row: number, col: number): void {
+    if (!onlineCanShoot) return;
+    if (onlinePlayerRadar[row]?.[col] !== "unknown") return;
+
+    socketRef.current?.emit(
+      "room:shoot",
+      { row, col },
+      (response: RoomActionAck): void => {
+        if (!response.ok) {
+          setOnlineNotice(response.error ?? "Shot failed.");
+        }
+      }
+    );
   }
 
   function handleCellClick(row: number, col: number): void {
+    if (gameMode === "online") {
+      handleOnlineShot(row, col);
+      return;
+    }
     setGame((prev) => applyPlayerShot(prev, row, col, false));
   }
 
@@ -1125,8 +1377,16 @@ export default function Home() {
     setStartPanel(null);
   }
 
-  function handleOnlinePanelChoice(): void {
+  function handleOnlineModeClick(): void {
     playButtonClickSound();
+    setStartPanel(null);
+    setIsOnlineLobbyOpen(true);
+    setGameMode("online");
+  }
+
+  function handleOfflineModeClick(): void {
+    playButtonClickSound();
+    setGameMode("solo");
     setStartPanel("level");
   }
 
@@ -1135,6 +1395,150 @@ export default function Home() {
     setBotDifficulty(nextDifficulty);
     resetGame(nextDifficulty);
     setStartPanel(null);
+  }
+
+  async function handleGoogleLogin(): Promise<void> {
+    if (!supabase) {
+      setOnlineNotice(
+        "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in client env."
+      );
+      return;
+    }
+    const redirectTo =
+      typeof window !== "undefined" ? `${window.location.origin}/` : undefined;
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo },
+    });
+    if (error) {
+      setOnlineNotice(error.message);
+    }
+  }
+
+  async function handleGoogleLogout(): Promise<void> {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setOnlineNotice(error.message);
+      return;
+    }
+    setOnlineNotice("Signed out.");
+  }
+
+  function saveOnlineProfile(): void {
+    if (!socketConnected) return;
+    socketRef.current?.emit(
+      "player:profile",
+      {
+        name: profileName,
+        city: profileCity,
+      },
+      (response: { ok: boolean; profile?: PlayerProfile }): void => {
+        if (!response.ok || !response.profile) {
+          setOnlineNotice("Failed to save profile.");
+          return;
+        }
+        setProfileName(response.profile.name);
+        setProfileCity(response.profile.city);
+        setOnlineNotice(
+          `Profile saved: ${response.profile.name} (${response.profile.city})`
+        );
+      }
+    );
+  }
+
+  function createOnlineRoom(): void {
+    if (!socketConnected) return;
+    socketRef.current?.emit("room:create", (response: RoomActionAck): void => {
+      if (!response.ok) {
+        setOnlineNotice(response.error ?? "Failed to create room.");
+        return;
+      }
+      setGameMode("online");
+      setOnlineNotice(`Room created: ${response.roomCode}`);
+    });
+  }
+
+  function joinOnlineRoom(): void {
+    if (!socketConnected) return;
+    const roomCode = sanitizeRoomCode(joinCode);
+    if (!roomCode) {
+      setOnlineNotice("Enter room code.");
+      return;
+    }
+    socketRef.current?.emit(
+      "room:join",
+      { roomCode },
+      (response: RoomActionAck): void => {
+        if (!response.ok) {
+          setOnlineNotice(response.error ?? "Failed to join room.");
+          return;
+        }
+        setGameMode("online");
+        setOnlineNotice(`Joined room: ${response.roomCode}`);
+      }
+    );
+  }
+
+  function quickFindOnline(): void {
+    if (!socketConnected) return;
+    const roomCode = sanitizeRoomCode(joinCode);
+    if (roomCode) {
+      joinOnlineRoom();
+      return;
+    }
+    socketRef.current?.emit("room:create", (response: RoomActionAck): void => {
+      if (!response.ok) {
+        setOnlineNotice(response.error ?? "Failed to create room.");
+        return;
+      }
+      setGameMode("online");
+      setOnlineNotice(
+        `Room ${response.roomCode} created. Share code or invite link with friend.`
+      );
+    });
+  }
+
+  function startOnlineMatch(): void {
+    if (!socketConnected) return;
+    socketRef.current?.emit("room:start", (response: RoomActionAck): void => {
+      if (!response.ok) {
+        setOnlineNotice(response.error ?? "Failed to start match.");
+      }
+    });
+  }
+
+  function leaveOnlineRoom(): void {
+    socketRef.current?.emit("room:leave");
+    setRoomView(null);
+    setOnlineNotice("Left room.");
+    syncRoomCodeToUrl(null);
+  }
+
+  async function copyOnlineInvite(): Promise<void> {
+    if (!roomView?.roomCode || typeof window === "undefined") return;
+    const inviteUrl = `${window.location.origin}/?room=${roomView.roomCode}`;
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setOnlineNotice("Invite link copied.");
+    } catch {
+      setOnlineNotice("Failed to copy invite link.");
+    }
+  }
+
+  function changeOnlineMode(nextMode: RoomMode): void {
+    if (!socketConnected) return;
+    socketRef.current?.emit(
+      "room:setMode",
+      { mode: nextMode },
+      (response: RoomActionAck): void => {
+        if (!response.ok) {
+          setOnlineNotice(response.error ?? "Failed to change mode.");
+          return;
+        }
+        setRoomMode(nextMode);
+      }
+    );
   }
 
   function handleOpenStatistics(): void {
@@ -1164,15 +1568,25 @@ export default function Home() {
             style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
           >
             <CarpetBoard
-              attackRadar={game.playerRadar}
-              defenseRadar={game.botRadar}
-              shipGrid={game.playerShipGrid}
-              playerShipHits={game.playerShipHits}
-              enemyShipGrid={game.enemyShipGrid}
-              enemyShipHits={game.enemyShipHits}
+              attackRadar={gameMode === "online" ? onlinePlayerRadar : game.playerRadar}
+              defenseRadar={gameMode === "online" ? onlineDefenseRadar : game.botRadar}
+              shipGrid={gameMode === "online" ? onlineShipGrid : game.playerShipGrid}
+              playerShipHits={gameMode === "online" ? onlineShipHits : game.playerShipHits}
+              enemyShipGrid={
+                gameMode === "online" ? hiddenEnemyShipGrid : game.enemyShipGrid
+              }
+              enemyShipHits={
+                gameMode === "online" ? hiddenEnemyShipHits : game.enemyShipHits
+              }
               hitEffects={hitEffects}
-              showDefenseLayer={showDefenseLayer}
-              canShoot={game.turn === "player" && game.winner === null}
+              showDefenseLayer={
+                gameMode === "online" ? onlineShowDefenseLayer : showDefenseLayer
+              }
+              canShoot={
+                gameMode === "online"
+                  ? Boolean(onlineCanShoot)
+                  : game.turn === "player" && game.winner === null
+              }
               onCellClick={handleCellClick}
               waterValue={WATER}
               showSetupUi={false}
@@ -1264,13 +1678,13 @@ export default function Home() {
                       <>
                         <button
                           type="button"
-                          onClick={handleOnlinePanelChoice}
+                          onClick={handleOnlineModeClick}
                           className="absolute left-[8.5%] top-[41.4%] h-[15.4%] w-[83%] rounded-xl transition duration-150 hover:scale-[1.015] active:scale-[0.985]"
                           aria-label="Online mode"
                         />
                         <button
                           type="button"
-                          onClick={handleOnlinePanelChoice}
+                          onClick={handleOfflineModeClick}
                           className="absolute left-[8.5%] top-[59.1%] h-[15.4%] w-[83%] rounded-xl transition duration-150 hover:scale-[1.015] active:scale-[0.985]"
                           aria-label="Offline mode"
                         />
@@ -1401,6 +1815,179 @@ export default function Home() {
               </div>
               <div className="mt-4 rounded-lg border border-[#6b532f]/70 bg-[#1a1a1a] p-3 text-sm text-[#dcc8a3]">
                 Leaderboard section reserved.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isOnlineLobbyOpen && (
+          <div className="absolute inset-0 z-[55] flex items-center justify-center bg-black/72 p-4">
+            <div className="w-full max-w-3xl rounded-2xl border border-[#6c5130] bg-[#131313] p-5 text-[#f3e8d0] shadow-[0_24px_70px_rgba(0,0,0,0.6)]">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-xl font-bold">Online Lobby</h2>
+                <div className="flex items-center gap-2">
+                  {authUser ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleGoogleLogout();
+                      }}
+                      className="rounded-md border border-[#8d6a42] px-3 py-1 text-sm hover:bg-[#272727]"
+                    >
+                      Logout
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleGoogleLogin();
+                      }}
+                      className="rounded-md border border-emerald-500/70 bg-emerald-500/20 px-3 py-1 text-sm text-emerald-100 hover:bg-emerald-500/30"
+                    >
+                      Login with Google
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsOnlineLobbyOpen(false)}
+                    className="rounded-md border border-[#8d6a42] px-3 py-1 text-sm hover:bg-[#272727]"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-3 grid gap-2 text-sm sm:grid-cols-2">
+                <div>
+                  <span className="text-[#d1c1a5]">Auth:</span>{" "}
+                  {authUser ? authUser.email ?? "Google user" : "Not logged in"}
+                </div>
+                <div>
+                  <span className="text-[#d1c1a5]">Socket:</span>{" "}
+                  {socketConnected ? "Connected" : "Disconnected"}
+                </div>
+                <div>
+                  <span className="text-[#d1c1a5]">Room:</span>{" "}
+                  {roomView?.roomCode ?? "-"}
+                </div>
+                <div>
+                  <span className="text-[#d1c1a5]">Mode:</span>{" "}
+                  {roomView?.mode ?? roomMode}
+                </div>
+              </div>
+
+              <div className="mb-4 grid gap-2 sm:grid-cols-2">
+                <input
+                  value={profileName}
+                  onChange={(event) => setProfileName(event.target.value)}
+                  placeholder="Player name"
+                  className="rounded-lg border border-[#6c5130] bg-[#0f0f0f] px-3 py-2 text-sm outline-none placeholder:text-[#8e816e]"
+                />
+                <input
+                  value={profileCity}
+                  onChange={(event) => setProfileCity(event.target.value)}
+                  placeholder="City"
+                  className="rounded-lg border border-[#6c5130] bg-[#0f0f0f] px-3 py-2 text-sm outline-none placeholder:text-[#8e816e]"
+                />
+              </div>
+
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={saveOnlineProfile}
+                  disabled={!socketConnected}
+                  className="rounded-lg border border-cyan-500/70 bg-cyan-500/20 px-3 py-2 text-sm text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Save profile
+                </button>
+                <button
+                  type="button"
+                  onClick={createOnlineRoom}
+                  disabled={!socketConnected}
+                  className="rounded-lg border border-emerald-500/70 bg-emerald-500/20 px-3 py-2 text-sm text-emerald-100 transition hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Create room
+                </button>
+                <button
+                  type="button"
+                  onClick={copyOnlineInvite}
+                  disabled={!roomView?.roomCode}
+                  className="rounded-lg border border-violet-500/70 bg-violet-500/20 px-3 py-2 text-sm text-violet-100 transition hover:bg-violet-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Copy invite
+                </button>
+                <button
+                  type="button"
+                  onClick={leaveOnlineRoom}
+                  disabled={!roomView}
+                  className="rounded-lg border border-rose-500/70 bg-rose-500/20 px-3 py-2 text-sm text-rose-100 transition hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Leave room
+                </button>
+              </div>
+
+              <div className="mb-4 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                <input
+                  value={joinCode}
+                  onChange={(event) => setJoinCode(sanitizeRoomCode(event.target.value))}
+                  placeholder="Find / Join by room code"
+                  className="rounded-lg border border-[#6c5130] bg-[#0f0f0f] px-3 py-2 text-sm outline-none placeholder:text-[#8e816e]"
+                />
+                <button
+                  type="button"
+                  onClick={joinOnlineRoom}
+                  disabled={!socketConnected}
+                  className="rounded-lg border border-cyan-500/70 bg-cyan-500/20 px-3 py-2 text-sm text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Join
+                </button>
+                <button
+                  type="button"
+                  onClick={quickFindOnline}
+                  disabled={!socketConnected}
+                  className="rounded-lg border border-amber-500/70 bg-amber-500/20 px-3 py-2 text-sm text-amber-100 transition hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Find
+                </button>
+              </div>
+
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => changeOnlineMode("classic")}
+                  disabled={!canChangeOnlineMode}
+                  className={`rounded-lg px-3 py-2 text-sm transition ${
+                    roomMode === "classic"
+                      ? "bg-cyan-500 text-slate-950"
+                      : "border border-[#6c5130] bg-[#191919] text-[#f3e8d0]"
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  Classic
+                </button>
+                <button
+                  type="button"
+                  onClick={() => changeOnlineMode("blitz3m")}
+                  disabled={!canChangeOnlineMode}
+                  className={`rounded-lg px-3 py-2 text-sm transition ${
+                    roomMode === "blitz3m"
+                      ? "bg-cyan-500 text-slate-950"
+                      : "border border-[#6c5130] bg-[#191919] text-[#f3e8d0]"
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  Blitz 3m
+                </button>
+                <button
+                  type="button"
+                  onClick={startOnlineMatch}
+                  disabled={!canStartOnlineMatch}
+                  className="rounded-lg border border-emerald-500/70 bg-emerald-500/20 px-3 py-2 text-sm text-emerald-100 transition hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Start match
+                </button>
+              </div>
+
+              <div className="rounded-lg border border-[#6c5130] bg-black/30 p-3 text-sm text-[#dcc8a3]">
+                {onlineNotice}
               </div>
             </div>
           </div>
