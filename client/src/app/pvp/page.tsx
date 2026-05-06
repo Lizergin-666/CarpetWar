@@ -7,15 +7,47 @@ import { buildPvpCoach, CoachReport } from "../../lib/coach";
 
 const BOARD_SIZE = 10;
 const WATER = -1;
+const STORAGE_PVP_PROFILE_KEY = "sea-war.pvp-profile.v1";
 
 type TurnMark = "unknown" | "miss" | "hit";
 type RoomPhase = "lobby" | "playing" | "finished";
 type Role = "host" | "guest";
 
+interface PlayerProfile {
+  name: string;
+  city: string;
+}
+
+interface LeaderboardEntry {
+  playerKey: string;
+  name: string;
+  city: string;
+  games: number;
+  wins: number;
+  losses: number;
+  accuracy: number;
+  winRate: number;
+  score: number;
+}
+
+interface CityLeaderboard {
+  city: string;
+  totalGames: number;
+  players: LeaderboardEntry[];
+}
+
+interface LeaderboardPayload {
+  updatedAtMs: number;
+  global: LeaderboardEntry[];
+  byCity: CityLeaderboard[];
+}
+
 interface RoomViewPayload {
   roomCode: string;
   phase: RoomPhase;
   youRole: Role;
+  yourProfile: PlayerProfile;
+  opponentProfile: PlayerProfile | null;
   opponentConnected: boolean;
   yourTurn: boolean;
   shotsLeft: number;
@@ -76,12 +108,33 @@ function countRadarMarks(radar: TurnMark[][]): { shots: number; hits: number } {
   return { shots, hits };
 }
 
+function readStoredPvpProfile(): PlayerProfile {
+  if (typeof window === "undefined") {
+    return { name: "", city: "" };
+  }
+
+  try {
+    const raw = localStorage.getItem(STORAGE_PVP_PROFILE_KEY);
+    if (!raw) return { name: "", city: "" };
+    const parsed = JSON.parse(raw) as Partial<PlayerProfile>;
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : "",
+      city: typeof parsed.city === "string" ? parsed.city : "",
+    };
+  } catch {
+    return { name: "", city: "" };
+  }
+}
+
 export default function PvpPage() {
   const [socketConnected, setSocketConnected] = useState(false);
   const [socketId, setSocketId] = useState("-");
   const [joinCode, setJoinCode] = useState("");
+  const [profileName, setProfileName] = useState<string>(() => readStoredPvpProfile().name);
+  const [profileCity, setProfileCity] = useState<string>(() => readStoredPvpProfile().city);
   const [showDefenseLayer, setShowDefenseLayer] = useState(false);
   const [roomView, setRoomView] = useState<RoomViewPayload | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardPayload | null>(null);
   const [notice, setNotice] = useState("Create room or join by code.");
   const [systemLog, setSystemLog] = useState<string[]>([]);
   const socketRef = useRef<Socket | null>(null);
@@ -100,6 +153,7 @@ export default function PvpPage() {
     socket.on("connect", () => {
       setSocketConnected(true);
       setSocketId(socket.id ?? "-");
+      socket.emit("leaderboard:get");
     });
 
     socket.on("disconnect", () => {
@@ -124,11 +178,35 @@ export default function PvpPage() {
       setSystemLog((prev) => [item, ...prev].slice(0, 8));
     });
 
+    socket.on("leaderboard:update", (payload: LeaderboardPayload) => {
+      setLeaderboard(payload);
+    });
+
     return () => {
       socket.disconnect();
       socketRef.current = null;
     };
   }, [socketUrl]);
+
+  useEffect(() => {
+    if (!socketConnected) return;
+    const storedProfile = readStoredPvpProfile();
+    socketRef.current?.emit("player:profile", {
+      name: storedProfile.name,
+      city: storedProfile.city,
+    });
+  }, [socketConnected]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STORAGE_PVP_PROFILE_KEY,
+        JSON.stringify({ name: profileName, city: profileCity })
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [profileCity, profileName]);
 
   const coachReport: CoachReport | null = useMemo(() => {
     if (!roomView) return null;
@@ -168,6 +246,27 @@ export default function PvpPage() {
 
   function setError(message: string): void {
     setNotice(message);
+  }
+
+  function saveProfile(): void {
+    const socket = socketRef.current;
+    if (!socket) return;
+    socket.emit(
+      "player:profile",
+      {
+        name: profileName,
+        city: profileCity,
+      },
+      (response: { ok: boolean; profile?: PlayerProfile }): void => {
+        if (!response.ok || !response.profile) {
+          setError("Failed to update profile.");
+          return;
+        }
+        setProfileName(response.profile.name);
+        setProfileCity(response.profile.city);
+        setNotice(`Profile saved: ${response.profile.name} (${response.profile.city})`);
+      }
+    );
   }
 
   function createRoom(): void {
@@ -265,6 +364,27 @@ export default function PvpPage() {
       <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
         <h2 className="mb-3 text-lg font-semibold text-cyan-100">Lobby</h2>
         <div className="mb-3 flex flex-wrap items-center gap-2">
+          <input
+            value={profileName}
+            onChange={(event) => setProfileName(event.target.value)}
+            placeholder="YOUR NAME"
+            className="rounded-lg border border-cyan-700/70 bg-slate-900/70 px-3 py-1 text-sm text-cyan-100 outline-none placeholder:text-cyan-300/50"
+          />
+          <input
+            value={profileCity}
+            onChange={(event) => setProfileCity(event.target.value)}
+            placeholder="CITY"
+            className="rounded-lg border border-cyan-700/70 bg-slate-900/70 px-3 py-1 text-sm text-cyan-100 outline-none placeholder:text-cyan-300/50"
+          />
+          <button
+            onClick={saveProfile}
+            disabled={!socketConnected}
+            className="rounded-lg border border-cyan-500/70 bg-cyan-500/20 px-3 py-1 text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Save profile
+          </button>
+        </div>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <button
             onClick={createRoom}
             disabled={!socketConnected}
@@ -323,6 +443,15 @@ export default function PvpPage() {
           </span>
           <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
             Role: {roomView?.youRole ?? "-"}
+          </span>
+          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
+            You: {roomView?.yourProfile.name ?? "-"} ({roomView?.yourProfile.city ?? "-"})
+          </span>
+          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
+            Opponent:{" "}
+            {roomView?.opponentProfile
+              ? `${roomView.opponentProfile.name} (${roomView.opponentProfile.city})`
+              : "-"}
           </span>
           <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
             Phase: {roomView?.phase ?? "-"}
@@ -403,6 +532,57 @@ export default function PvpPage() {
             })
           )}
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
+        <h2 className="mb-3 text-lg font-semibold text-cyan-100">Leaderboard</h2>
+        {!leaderboard ? (
+          <p className="text-sm text-cyan-200/80">Leaderboard is loading...</p>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-cyan-300/70">
+              Updated: {new Date(leaderboard.updatedAtMs).toLocaleTimeString()}
+            </p>
+            <h3 className="text-sm font-semibold text-cyan-100">Global Top</h3>
+            {leaderboard.global.length === 0 ? (
+              <p className="mt-1 text-xs text-cyan-200/80">No ranked matches yet.</p>
+            ) : (
+              <ul className="mt-1 space-y-1 text-xs text-cyan-100/90">
+                {leaderboard.global.slice(0, 8).map((entry, index) => (
+                  <li key={entry.playerKey}>
+                    #{index + 1} {entry.name} ({entry.city}) | W:{entry.wins} L:
+                    {entry.losses} | Acc:{entry.accuracy}% | Score:{entry.score}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <h3 className="mt-4 text-sm font-semibold text-cyan-100">Top Cities</h3>
+            {leaderboard.byCity.length === 0 ? (
+              <p className="mt-1 text-xs text-cyan-200/80">City leaderboard is empty.</p>
+            ) : (
+              <ul className="mt-1 space-y-2 text-xs text-cyan-100/90">
+                {leaderboard.byCity.slice(0, 5).map((cityBoard) => (
+                  <li
+                    key={cityBoard.city}
+                    className="rounded-lg border border-cyan-900/50 bg-slate-900/60 p-2"
+                  >
+                    <div className="font-medium text-cyan-100">
+                      {cityBoard.city} | games: {cityBoard.totalGames}
+                    </div>
+                    <div className="mt-1 space-y-1">
+                      {cityBoard.players.slice(0, 3).map((entry, idx) => (
+                        <div key={`${cityBoard.city}-${entry.playerKey}`}>
+                          {idx + 1}. {entry.name} | W:{entry.wins} L:{entry.losses} |
+                          Score:{entry.score}
+                        </div>
+                      ))}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
       </section>
 
       <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">

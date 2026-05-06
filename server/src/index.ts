@@ -22,6 +22,47 @@ type OpponentId = string | null;
 type TurnMark = "unknown" | "miss" | "hit";
 type RoomPhase = "lobby" | "playing" | "finished";
 
+interface PlayerProfile {
+  name: string;
+  city: string;
+}
+
+interface PlayerStat {
+  playerKey: string;
+  name: string;
+  city: string;
+  games: number;
+  wins: number;
+  losses: number;
+  shots: number;
+  hits: number;
+  updatedAtMs: number;
+}
+
+interface LeaderboardEntry {
+  playerKey: string;
+  name: string;
+  city: string;
+  games: number;
+  wins: number;
+  losses: number;
+  accuracy: number;
+  winRate: number;
+  score: number;
+}
+
+interface CityLeaderboard {
+  city: string;
+  totalGames: number;
+  players: LeaderboardEntry[];
+}
+
+interface LeaderboardPayload {
+  updatedAtMs: number;
+  global: LeaderboardEntry[];
+  byCity: CityLeaderboard[];
+}
+
 interface Placement {
   shipGrid: number[][];
   shipLengths: number[];
@@ -56,6 +97,8 @@ interface RoomViewPayload {
   roomCode: string;
   phase: RoomPhase;
   youRole: "host" | "guest";
+  yourProfile: PlayerProfile;
+  opponentProfile: PlayerProfile | null;
   opponentConnected: boolean;
   yourTurn: boolean;
   shotsLeft: number;
@@ -103,6 +146,8 @@ const io = new Server(httpServer, {
 const clients = new Map<string, OpponentId>();
 const rooms = new Map<string, RoomState>();
 const socketToRoom = new Map<string, string>();
+const socketProfiles = new Map<string, PlayerProfile>();
+const playerStats = new Map<string, PlayerStat>();
 
 function getSocketById(socketId: string): Socket | undefined {
   return io.of("/").sockets.get(socketId);
@@ -205,6 +250,170 @@ function formatCoord(row: number, col: number): string {
   return `${String.fromCharCode(65 + col)}${row + 1}`;
 }
 
+function sanitizeName(raw: unknown): string {
+  const normalized = String(raw ?? "").trim().replace(/\s+/g, " ");
+  if (!normalized) return "";
+  return normalized.slice(0, 24);
+}
+
+function sanitizeCity(raw: unknown): string {
+  const normalized = String(raw ?? "").trim().replace(/\s+/g, " ");
+  if (!normalized) return "";
+  return normalized.slice(0, 32);
+}
+
+function defaultProfileForSocket(socketId: string): PlayerProfile {
+  return {
+    name: `Player-${socketId.slice(0, 4)}`,
+    city: "Unknown",
+  };
+}
+
+function getSocketProfile(socketId: string): PlayerProfile {
+  return socketProfiles.get(socketId) ?? defaultProfileForSocket(socketId);
+}
+
+function makePlayerKey(profile: PlayerProfile): string {
+  return `${profile.name.toLowerCase()}::${profile.city.toLowerCase()}`;
+}
+
+function percent(hits: number, shots: number): number {
+  if (shots <= 0) return 0;
+  return Math.round((hits / shots) * 100);
+}
+
+function scoreFromStat(stat: PlayerStat): number {
+  const accuracy = percent(stat.hits, stat.shots);
+  return stat.wins * 100 - stat.losses * 30 + accuracy * 2;
+}
+
+function asLeaderboardEntry(stat: PlayerStat): LeaderboardEntry {
+  return {
+    playerKey: stat.playerKey,
+    name: stat.name,
+    city: stat.city,
+    games: stat.games,
+    wins: stat.wins,
+    losses: stat.losses,
+    accuracy: percent(stat.hits, stat.shots),
+    winRate: percent(stat.wins, stat.games),
+    score: scoreFromStat(stat),
+  };
+}
+
+function buildLeaderboard(): LeaderboardPayload {
+  const entries = Array.from(playerStats.values()).map(asLeaderboardEntry);
+  entries.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.wins !== a.wins) return b.wins - a.wins;
+    if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
+    return a.name.localeCompare(b.name);
+  });
+
+  const byCityMap = new Map<string, LeaderboardEntry[]>();
+  for (const entry of entries) {
+    if (!byCityMap.has(entry.city)) byCityMap.set(entry.city, []);
+    byCityMap.get(entry.city)?.push(entry);
+  }
+
+  const byCity: CityLeaderboard[] = Array.from(byCityMap.entries())
+    .map(([city, cityEntries]) => {
+      const totalGames = cityEntries.reduce((sum, entry) => sum + entry.games, 0);
+      return {
+        city,
+        totalGames,
+        players: cityEntries.slice(0, 5),
+      };
+    })
+    .sort((a, b) => {
+      if (b.players.length !== a.players.length) return b.players.length - a.players.length;
+      return b.totalGames - a.totalGames;
+    })
+    .slice(0, 8);
+
+  return {
+    updatedAtMs: Date.now(),
+    global: entries.slice(0, 20),
+    byCity,
+  };
+}
+
+function emitLeaderboardUpdate(targetSocketId?: string): void {
+  const payload = buildLeaderboard();
+  if (targetSocketId) {
+    getSocketById(targetSocketId)?.emit("leaderboard:update", payload);
+    return;
+  }
+  io.emit("leaderboard:update", payload);
+}
+
+function updateProfile(socketId: string, rawName: unknown, rawCity: unknown): PlayerProfile {
+  const current = getSocketProfile(socketId);
+  const nextName = sanitizeName(rawName) || current.name;
+  const nextCity = sanitizeCity(rawCity) || current.city;
+  const profile: PlayerProfile = {
+    name: nextName,
+    city: nextCity,
+  };
+  socketProfiles.set(socketId, profile);
+  return profile;
+}
+
+function upsertPlayerStat(
+  profile: PlayerProfile,
+  didWin: boolean,
+  shots: number,
+  hits: number
+): void {
+  const key = makePlayerKey(profile);
+  const prev = playerStats.get(key);
+  const next: PlayerStat = prev
+    ? {
+        ...prev,
+        games: prev.games + 1,
+        wins: prev.wins + (didWin ? 1 : 0),
+        losses: prev.losses + (didWin ? 0 : 1),
+        shots: prev.shots + shots,
+        hits: prev.hits + hits,
+        updatedAtMs: Date.now(),
+      }
+    : {
+        playerKey: key,
+        name: profile.name,
+        city: profile.city,
+        games: 1,
+        wins: didWin ? 1 : 0,
+        losses: didWin ? 0 : 1,
+        shots,
+        hits,
+        updatedAtMs: Date.now(),
+      };
+
+  playerStats.set(key, next);
+}
+
+function recordRoomResult(room: RoomState, winnerSocketId: string, loserSocketId: string): void {
+  const winnerRoundState = room.players.get(winnerSocketId);
+  const loserRoundState = room.players.get(loserSocketId);
+  if (!winnerRoundState || !loserRoundState) return;
+
+  const winnerProfile = getSocketProfile(winnerSocketId);
+  const loserProfile = getSocketProfile(loserSocketId);
+  upsertPlayerStat(
+    winnerProfile,
+    true,
+    winnerRoundState.shotsFired,
+    winnerRoundState.hits
+  );
+  upsertPlayerStat(
+    loserProfile,
+    false,
+    loserRoundState.shotsFired,
+    loserRoundState.hits
+  );
+  emitLeaderboardUpdate();
+}
+
 interface Coord {
   row: number;
   col: number;
@@ -289,6 +498,7 @@ function applyRoomShot(
     room.lastTimerSecondBroadcast = null;
     room.log.unshift(`${actor} wins the match.`);
     trimLog(room);
+    recordRoomResult(room, shooterId, opponentId);
     return { ok: true, roomCode: room.code };
   }
 
@@ -485,6 +695,8 @@ function resetRoomToLobby(room: RoomState, message: string): void {
 function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
   const youRole = getRole(room, socketId);
   const opponentId = getOpponentId(room, socketId);
+  const yourProfile = getSocketProfile(socketId);
+  const opponentProfile = opponentId ? getSocketProfile(opponentId) : null;
   const youState = room.players.get(socketId) ?? null;
   const opponentState = opponentId ? room.players.get(opponentId) ?? null : null;
 
@@ -519,6 +731,8 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     roomCode: room.code,
     phase: room.phase,
     youRole,
+    yourProfile,
+    opponentProfile,
     opponentConnected: room.guestId !== null,
     yourTurn,
     shotsLeft: room.shotsLeft,
@@ -610,11 +824,13 @@ setInterval(() => {
 
 io.on("connection", (socket) => {
   addClient(socket);
+  socketProfiles.set(socket.id, defaultProfileForSocket(socket.id));
 
   socket.emit("server:welcome", {
     message: "Sea War socket server online",
     socketId: socket.id,
   });
+  emitLeaderboardUpdate(socket.id);
 
   socket.on("newGame", () => {
     const previousOpponentId = clients.get(socket.id) ?? undefined;
@@ -632,6 +848,27 @@ io.on("connection", (socket) => {
 
   socket.on("end", (endPayload: unknown) => {
     relayToOpponent(socket, "end", endPayload);
+  });
+
+  socket.on(
+    "player:profile",
+    (
+      payload: { name?: string; city?: string },
+      callback?: (response: { ok: boolean; profile?: PlayerProfile }) => void
+    ) => {
+      const profile = updateProfile(socket.id, payload?.name, payload?.city);
+      const roomCode = socketToRoom.get(socket.id);
+      if (roomCode) emitRoomState(roomCode);
+      emitLeaderboardUpdate();
+      callback?.({
+        ok: true,
+        profile,
+      });
+    }
+  );
+
+  socket.on("leaderboard:get", () => {
+    emitLeaderboardUpdate(socket.id);
   });
 
   socket.on("room:create", (callback?: (response: RoomActionAck) => void) => {
@@ -792,6 +1029,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     leaveRoomBySocketId(socket.id, "Opponent disconnected.");
     removeClient(socket);
+    socketProfiles.delete(socket.id);
   });
 });
 
