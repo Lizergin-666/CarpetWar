@@ -1,11 +1,10 @@
 "use client";
 
 import { io, Socket } from "socket.io-client";
-import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildSoloCoach, CoachReport } from "../lib/coach";
 import { CarpetBoard } from "../components/CarpetBoard";
-import { VintageSoundToggle } from "../components/VintageSoundToggle";
 
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
@@ -13,15 +12,38 @@ const BOT_TURN_DELAY_MS = 750;
 const PLAYER_TURN_SECONDS = 20;
 const WATER = -1;
 const MISS_SOUND_URL = "/sound/smash1.mp3";
+const THEME_SOUND_URL = "/sound/Theme.mp3";
+const HMM_SOUND_URL = "/sound/hmm.mp3";
+const LAUGH_SOUND_URL = "/sound/lought.mp3";
 const HISTORY_LIMIT = 25;
 const STORAGE_HISTORY_KEY = "sea-war.match-history.v1";
 const STORAGE_DIFFICULTY_KEY = "sea-war.bot-difficulty.v1";
 const STORAGE_SOUND_ENABLED_KEY = "sea-war.sound-enabled.v1";
 const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
+const UI_LOGO_URL = "/ui/logo-main.png";
+const UI_MENU_BUTTON_URL = "/ui/btn-menu.png";
+const UI_START_BUTTON_URL = "/ui/btn-start.png";
+const UI_MENU_PANEL_URL = "/ui/menu-panel.png";
+const UI_ONLINE_PANEL_URL = "/ui/panel-online.png";
+const UI_LEVEL_PANEL_URL = "/ui/panel-level.png";
+const UI_DECOR_BLUE_URL = "/ui/character-blue1.png";
+const UI_DECOR_RED_URL = "/ui/character-red1-v2.png";
+const UI_HEALTH_BLUE_URL = "/ui/health-blue.png";
+const UI_HEALTH_RED_URL = "/ui/health-red.png";
+const UI_DOOR_LEFT_URL = "/ui/door-left.png";
+const UI_DOOR_RIGHT_URL = "/ui/door-right.png";
+const BUTTON_SOUND_URL = "/ui/button.mp3";
+const MENU_BUTTON_RIGHT_PCT = 1.9;
+const MENU_BUTTON_TOP_PCT = 2.3;
+const MENU_BUTTON_WIDTH_PCT = 16;
+const MENU_PANEL_WIDTH_PCT = 19.6;
+const MENU_PANEL_CENTER_X_PCT =
+  100 - MENU_BUTTON_RIGHT_PCT - MENU_BUTTON_WIDTH_PCT / 2;
 
 type Turn = "player" | "bot" | "finished";
 type Mark = "unknown" | "miss" | "hit";
 type BotDifficulty = "easy" | "medium" | "hard";
+type StartPanel = "online" | "level";
 
 interface Placement {
   shipGrid: number[][];
@@ -83,6 +105,13 @@ interface MatchSummary {
   botAccuracy: number;
 }
 
+interface HitEffect {
+  id: string;
+  row: number;
+  col: number;
+  startedAtMs: number;
+}
+
 const BOT_DIFFICULTY_LABELS: Record<BotDifficulty, string> = {
   easy: "Easy (random)",
   medium: "Medium (hunt + target)",
@@ -136,17 +165,6 @@ function readStoredHistory(): MatchSummary[] {
       .slice(0, HISTORY_LIMIT);
   } catch {
     return [];
-  }
-}
-
-function readStoredSoundEnabled(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    const raw = localStorage.getItem(STORAGE_SOUND_ENABLED_KEY);
-    if (raw === null) return true;
-    return raw === "1";
-  } catch {
-    return true;
   }
 }
 
@@ -211,7 +229,8 @@ function placeFleetRandomly(fleet: readonly number[]): Placement {
       let placed = false;
 
       for (let tries = 0; tries < 500; tries += 1) {
-        const horizontal = Math.random() < 0.5;
+        const forceHorizontal = length === 5 || length === 2;
+        const horizontal = forceHorizontal ? true : Math.random() < 0.5;
         const row = randomInt(horizontal ? BOARD_SIZE : BOARD_SIZE - length + 1);
         const col = randomInt(horizontal ? BOARD_SIZE - length + 1 : BOARD_SIZE);
 
@@ -691,11 +710,14 @@ export default function Home() {
   );
   const [history, setHistory] = useState<MatchSummary[]>(() => readStoredHistory());
   const [coachReport, setCoachReport] = useState<CoachReport | null>(null);
-  const [showDefenseLayer, setShowDefenseLayer] = useState<boolean>(false);
-  const [turnSecondsLeft, setTurnSecondsLeft] = useState<number>(PLAYER_TURN_SECONDS);
-  const [isSoundEnabled, setIsSoundEnabled] = useState<boolean>(() =>
-    readStoredSoundEnabled()
-  );
+  const [hitEffects, setHitEffects] = useState<HitEffect[]>([]);
+  const [isSoundEnabled, setIsSoundEnabled] = useState<boolean>(true);
+  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
+  const [isStatsOpen, setIsStatsOpen] = useState<boolean>(false);
+  const [startPanel, setStartPanel] = useState<StartPanel | null>(null);
+  const [isDoorOverlayVisible, setIsDoorOverlayVisible] = useState<boolean>(true);
+  const [isDoorOpened, setIsDoorOpened] = useState<boolean>(false);
+  const [isSceneDimmed, setIsSceneDimmed] = useState<boolean>(true);
 
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [socketId, setSocketId] = useState<string>("-");
@@ -707,14 +729,52 @@ export default function Home() {
   const [socketSystemLog, setSocketSystemLog] = useState<string[]>([]);
   const savedResultGameIdRef = useRef<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  const turnDeadlineMsRef = useRef<number | null>(null);
-  const missSoundRef = useRef<HTMLAudioElement | null>(null);
-  const missCountRef = useRef<number>(0);
+  const impactSoundRef = useRef<HTMLAudioElement | null>(null);
+  const themeSoundRef = useRef<HTMLAudioElement | null>(null);
+  const hmmSoundRef = useRef<HTMLAudioElement | null>(null);
+  const laughSoundRef = useRef<HTMLAudioElement | null>(null);
+  const buttonSoundRef = useRef<HTMLAudioElement | null>(null);
+  const missEventCountRef = useRef<number>(0);
+  const hitEventCountRef = useRef<number>(0);
+  const radarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
+  const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
     []
   );
+
+  const tryPlayTheme = useCallback((): void => {
+    const theme = themeSoundRef.current;
+    if (!theme) return;
+    void theme.play().catch(() => {
+      // Ignore autoplay restrictions.
+    });
+  }, []);
+
+  const playSound = useCallback((ref: { current: HTMLAudioElement | null }): void => {
+    const base = ref.current;
+    if (!base) return;
+    const instance = base.cloneNode(true) as HTMLAudioElement;
+    instance.volume = base.volume;
+    void instance.play().catch(() => {
+      // Ignore autoplay/user-gesture restrictions.
+    });
+  }, []);
+
+  const appendHitEffects = useCallback((effects: HitEffect[]): void => {
+    if (effects.length === 0) return;
+    setHitEffects((prev) => [...prev, ...effects]);
+    window.setTimeout(() => {
+      setHitEffects((prev) =>
+        prev.filter((effect) => !effects.some((added) => added.id === effect.id))
+      );
+    }, 1700);
+  }, []);
+
+  const resetHitEffects = useCallback((): void => {
+    setHitEffects([]);
+  }, []);
 
   useEffect(() => {
     const socket: Socket = io(socketUrl, {
@@ -762,17 +822,52 @@ export default function Home() {
   }, [socketUrl]);
 
   useEffect(() => {
-    const audio = new Audio(MISS_SOUND_URL);
-    audio.preload = "auto";
-    audio.volume = 0.65;
-    missSoundRef.current = audio;
+    const impactAudio = new Audio(MISS_SOUND_URL);
+    impactAudio.preload = "auto";
+    impactAudio.volume = 0.7;
+    impactSoundRef.current = impactAudio;
+
+    const themeAudio = new Audio(THEME_SOUND_URL);
+    themeAudio.preload = "auto";
+    themeAudio.loop = true;
+    themeAudio.volume = 0.33;
+    themeSoundRef.current = themeAudio;
+    if (isSoundEnabled) {
+      void themeAudio.play().catch(() => {
+        // Ignore autoplay restrictions.
+      });
+    }
+
+    const hmmAudio = new Audio(HMM_SOUND_URL);
+    hmmAudio.preload = "auto";
+    hmmAudio.volume = 0.68;
+    hmmSoundRef.current = hmmAudio;
+
+    const laughAudio = new Audio(LAUGH_SOUND_URL);
+    laughAudio.preload = "auto";
+    laughAudio.volume = 0.72;
+    laughSoundRef.current = laughAudio;
+
+    const buttonAudio = new Audio(BUTTON_SOUND_URL);
+    buttonAudio.preload = "auto";
+    buttonAudio.volume = 0.7;
+    buttonSoundRef.current = buttonAudio;
+
     return () => {
-      if (!missSoundRef.current) return;
-      missSoundRef.current.pause();
-      missSoundRef.current.src = "";
-      missSoundRef.current = null;
+      for (const ref of [
+        impactSoundRef,
+        themeSoundRef,
+        hmmSoundRef,
+        laughSoundRef,
+        buttonSoundRef,
+      ]) {
+        if (!ref.current) continue;
+        ref.current.pause();
+        ref.current.src = "";
+        ref.current = null;
+      }
     };
-  }, []);
+  }, [isSoundEnabled]);
 
   useEffect(() => {
     try {
@@ -799,50 +894,130 @@ export default function Home() {
   }, [isSoundEnabled]);
 
   useEffect(() => {
-    const currentMisses = countMisses(game.playerRadar);
-    const previousMisses = missCountRef.current;
-    if (isSoundEnabled && currentMisses > previousMisses) {
-      const burst = currentMisses - previousMisses;
-      for (let i = 0; i < burst; i += 1) {
-        const base = missSoundRef.current;
-        if (!base) break;
-        const instance = base.cloneNode(true) as HTMLAudioElement;
-        instance.volume = base.volume;
-        void instance.play().catch(() => {
-          // Ignore autoplay/user-gesture restrictions.
-        });
-      }
-    }
-    missCountRef.current = currentMisses;
-  }, [game.playerRadar, isSoundEnabled]);
+    const openTimer = window.setTimeout(() => {
+      setIsDoorOpened(true);
+      setIsSceneDimmed(false);
+    }, 2000);
+    const hideTimer = window.setTimeout(() => {
+      setIsDoorOverlayVisible(false);
+    }, 4100);
+    return () => {
+      window.clearTimeout(openTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, []);
 
   useEffect(() => {
-    if (game.turn !== "player" || game.winner !== null) {
-      turnDeadlineMsRef.current = null;
-      return;
+    const theme = themeSoundRef.current;
+    if (!theme) return;
+    if (isSoundEnabled) {
+      tryPlayTheme();
+    } else {
+      theme.pause();
+      theme.currentTime = 0;
+    }
+  }, [isSoundEnabled, tryPlayTheme]);
+
+  useEffect(() => {
+    if (!isSoundEnabled) return;
+    tryPlayTheme();
+    const unlockAudio = (): void => {
+      tryPlayTheme();
+    };
+    window.addEventListener("pointerdown", unlockAudio, { passive: true });
+    window.addEventListener("touchstart", unlockAudio, { passive: true });
+    window.addEventListener("keydown", unlockAudio);
+    return () => {
+      window.removeEventListener("pointerdown", unlockAudio);
+      window.removeEventListener("touchstart", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
+    };
+  }, [isSoundEnabled, tryPlayTheme]);
+
+  useEffect(() => {
+    const prevRadar = radarSnapshotRef.current;
+    const prevEnemyHits = enemyShipHitsSnapshotRef.current;
+    const nextRadar = game.playerRadar;
+    const nextEnemyHits = game.enemyShipHits;
+
+    if (isSoundEnabled && themeSoundRef.current && themeSoundRef.current.paused) {
+      tryPlayTheme();
     }
 
-    turnDeadlineMsRef.current = Date.now() + PLAYER_TURN_SECONDS * 1000;
-
-    let hasTriggeredAutoFire = false;
-    const timer = setInterval(() => {
-      const deadlineMs = turnDeadlineMsRef.current;
-      if (!deadlineMs) return;
-
-      const msLeft = deadlineMs - Date.now();
-      const nextSeconds = Math.max(0, Math.ceil(msLeft / 1000));
-      setTurnSecondsLeft(nextSeconds);
-
-      if (msLeft <= 0 && !hasTriggeredAutoFire) {
-        hasTriggeredAutoFire = true;
-        setGame((prev) => autoFireRemainingShots(prev));
+    const sunkShipIds = new Set<number>();
+    for (let shipId = 0; shipId < game.enemyShipLengths.length; shipId += 1) {
+      const prevHits = prevEnemyHits[shipId] ?? 0;
+      const nextHits = nextEnemyHits[shipId] ?? 0;
+      const shipLength = game.enemyShipLengths[shipId] ?? 0;
+      if (shipLength > 0 && prevHits < shipLength && nextHits >= shipLength) {
+        sunkShipIds.add(shipId);
       }
-    }, 250);
+    }
 
+    const newHitEffects: HitEffect[] = [];
+    for (let row = 0; row < BOARD_SIZE; row += 1) {
+      for (let col = 0; col < BOARD_SIZE; col += 1) {
+        const before = prevRadar[row]?.[col] ?? "unknown";
+        const after = nextRadar[row]?.[col] ?? "unknown";
+        if (before !== "unknown" || after === "unknown") continue;
+
+        playSound(impactSoundRef);
+
+        if (after === "miss") {
+          missEventCountRef.current += 1;
+          if (missEventCountRef.current % 3 === 0) {
+            playSound(hmmSoundRef);
+          }
+          continue;
+        }
+
+        if (after === "hit") {
+          newHitEffects.push({
+            id: `${Date.now()}-${row}-${col}-${Math.random().toString(16).slice(2, 6)}`,
+            row,
+            col,
+            startedAtMs: Date.now(),
+          });
+
+          const shipId = game.enemyShipGrid[row][col];
+          if (sunkShipIds.has(shipId)) {
+            playSound(laughSoundRef);
+          } else {
+            hitEventCountRef.current += 1;
+            if (hitEventCountRef.current % 2 === 0) {
+              playSound(laughSoundRef);
+            }
+          }
+        }
+      }
+    }
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    appendHitEffects(newHitEffects);
+
+    radarSnapshotRef.current = nextRadar.map((row) => row.slice());
+    enemyShipHitsSnapshotRef.current = [...nextEnemyHits];
+  }, [
+    appendHitEffects,
+    game.enemyShipGrid,
+    game.enemyShipHits,
+    game.enemyShipLengths,
+    game.playerRadar,
+    isSoundEnabled,
+    tryPlayTheme,
+    playSound,
+  ]);
+
+  useEffect(() => {
+    if (game.turn !== "bot") return;
+    if (game.winner !== null) return;
+    const timer = window.setTimeout(() => {
+      setGame((prev) => resolveBotSalvo(prev, botDifficulty));
+    }, 720);
     return () => {
-      clearInterval(timer);
+      window.clearTimeout(timer);
     };
-  }, [game.id, game.round, game.turn, game.winner]);
+  }, [botDifficulty, game.turn, game.winner]);
 
   useEffect(() => {
     if (game.winner === null) return;
@@ -890,18 +1065,6 @@ export default function Home() {
     game.winner,
   ]);
 
-  useEffect(() => {
-    if (game.turn !== "bot" || game.winner !== null) return;
-
-    const timer = setTimeout(() => {
-      setGame((prev) => resolveBotSalvo(prev, prev.difficulty));
-    }, BOT_TURN_DELAY_MS);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [game.turn, game.winner]);
-
   const playerRemainingDecks = countRemainingDecks(
     game.playerShipHits,
     game.playerShipLengths
@@ -914,291 +1077,368 @@ export default function Home() {
   const totalWins = history.filter((match) => match.winner === "player").length;
   const totalLosses = totalGames - totalWins;
   const winRate = totalGames > 0 ? Math.round((totalWins / totalGames) * 100) : 0;
+  const showDefenseLayer = game.turn === "bot" || (game.turn === "finished" && game.winner === "bot");
   const avgPlayerAccuracy =
     totalGames > 0
       ? Math.round(
           history.reduce((sum, match) => sum + match.playerAccuracy, 0) / totalGames
         )
       : 0;
-  const turnTimerCritical = game.turn === "player" && turnSecondsLeft <= 6;
+
+  useEffect(() => {
+    radarSnapshotRef.current = game.playerRadar.map((row) => row.slice());
+    enemyShipHitsSnapshotRef.current = [...game.enemyShipHits];
+    missEventCountRef.current = 0;
+    hitEventCountRef.current = 0;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    resetHitEffects();
+  }, [game.enemyShipHits, game.id, game.playerRadar, resetHitEffects]);
 
   function resetGame(nextDifficulty?: BotDifficulty): void {
     const difficulty = nextDifficulty ?? botDifficulty;
     setGame(createGameState(difficulty));
     setCoachReport(null);
-  }
-
-  function handleDifficultyChange(nextDifficulty: BotDifficulty): void {
-    setBotDifficulty(nextDifficulty);
-    resetGame(nextDifficulty);
+    setHitEffects([]);
   }
 
   function handleCellClick(row: number, col: number): void {
     setGame((prev) => applyPlayerShot(prev, row, col, false));
   }
 
+  function playButtonClickSound(): void {
+    playSound(buttonSoundRef);
+  }
+
+  function handleMenuToggle(): void {
+    playButtonClickSound();
+    setIsMenuOpen((prev) => !prev);
+  }
+
+  function handleStartClick(): void {
+    playButtonClickSound();
+    setStartPanel("online");
+    setIsMenuOpen(false);
+    setIsStatsOpen(false);
+  }
+
+  function handleCloseStartPanel(): void {
+    setStartPanel(null);
+  }
+
+  function handleOnlinePanelChoice(): void {
+    playButtonClickSound();
+    setStartPanel("level");
+  }
+
+  function handleLevelChoice(nextDifficulty: BotDifficulty): void {
+    playButtonClickSound();
+    setBotDifficulty(nextDifficulty);
+    resetGame(nextDifficulty);
+    setStartPanel(null);
+  }
+
+  function handleOpenStatistics(): void {
+    playButtonClickSound();
+    setIsMenuOpen(false);
+    setIsStatsOpen(true);
+  }
+
+  function handleCloseStatistics(): void {
+    setIsStatsOpen(false);
+  }
+
+  function handleSetSoundEnabled(nextEnabled: boolean): void {
+    playButtonClickSound();
+    setIsSoundEnabled(nextEnabled);
+    if (nextEnabled) {
+      tryPlayTheme();
+    }
+  }
+
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6">
-      <header className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-cyan-500/20 px-3 py-1 text-xs text-cyan-100">
-            Solo Mode
-          </span>
-          <Link
-            href="/pvp"
-            className="rounded-lg border border-cyan-500/70 bg-slate-900/80 px-3 py-1 text-sm text-cyan-100 transition hover:bg-slate-800"
+    <main className="h-[100dvh] w-screen overflow-hidden bg-black">
+      <div className="relative h-full w-full">
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+          <div
+            className="relative overflow-hidden"
+            style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
           >
-            Open PvP by Link
-          </Link>
-          <button className="rounded-lg border border-amber-400/70 bg-amber-500/20 px-3 py-1 text-xs font-medium text-amber-100 transition hover:bg-amber-500/30">
-            Upgrade to Pro
-          </button>
-          <VintageSoundToggle
-            enabled={isSoundEnabled}
-            onToggle={() => setIsSoundEnabled((prev) => !prev)}
-          />
-        </div>
-        <h1 className="text-2xl font-bold text-cyan-100">Sea War: Single Board</h1>
-        <p className="mt-1 text-sm text-cyan-200/80">
-          One board mode. Fleet is auto-placed: 1x5, 2x4, 3x3, 4x2. Each turn:
-          3 player shots, then 3 bot shots.
-        </p>
-      </header>
-
-      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <h2 className="mb-3 text-lg font-semibold text-cyan-100">Game Status</h2>
-        <div className="mb-3 flex flex-wrap gap-3 text-sm">
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Round: {game.round}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Turn: {game.turn}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Shots left: {game.turn === "player" ? game.shotsLeft : 0}
-          </span>
-          <span
-            className={`rounded-full border px-3 py-1 ${
-              turnTimerCritical
-                ? "border-amber-300/70 bg-amber-400/20 text-amber-100"
-                : "border-cyan-900/60 bg-slate-900/80 text-cyan-100/90"
-            }`}
-          >
-            Turn timer: {game.turn === "player" ? `${turnSecondsLeft}s` : "-"}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Your decks left: {playerRemainingDecks}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Enemy decks left: {enemyRemainingDecks}
-          </span>
-          <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-emerald-100">
-            {game.status}
-          </span>
-          {game.winner && (
-            <span className="rounded-full bg-amber-500/20 px-3 py-1 text-amber-100">
-              Winner: {game.winner}
-            </span>
-          )}
-          <button
-            onClick={() => resetGame()}
-            className="rounded-lg bg-cyan-500 px-3 py-1 font-medium text-slate-950 transition hover:bg-cyan-400"
-          >
-            New game
-          </button>
-          <button
-            onClick={() => setGame((prev) => autoFireRemainingShots(prev))}
-            disabled={game.turn !== "player" || game.winner !== null}
-            className="rounded-lg border border-cyan-400/60 bg-slate-900/80 px-3 py-1 text-cyan-100 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Auto-complete turn
-          </button>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm text-cyan-100/90">Bot difficulty:</span>
-          {(["easy", "medium", "hard"] as const).map((level) => (
-            <button
-              key={level}
-              onClick={() => handleDifficultyChange(level)}
-              className={`rounded-lg px-3 py-1 text-sm ${
-                botDifficulty === level
-                  ? "bg-cyan-500 text-slate-950"
-                  : "bg-slate-900/80 text-cyan-100 hover:bg-slate-800"
-              }`}
-            >
-              {BOT_DIFFICULTY_LABELS[level]}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <h2 className="mb-3 text-lg font-semibold text-cyan-100">Career Stats</h2>
-        <div className="flex flex-wrap gap-3 text-sm">
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Total games: {totalGames}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Wins: {totalWins}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Losses: {totalLosses}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Win rate: {winRate}%
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Avg accuracy: {avgPlayerAccuracy}%
-          </span>
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <h2 className="mb-3 text-lg font-semibold text-cyan-100">Match History</h2>
-        {history.length === 0 ? (
-          <p className="text-sm text-cyan-200/80">No finished matches yet.</p>
-        ) : (
-          <ul className="space-y-2 text-sm text-cyan-100/90">
-            {history.slice(0, 8).map((match) => (
-              <li key={match.id} className="rounded-lg border border-cyan-900/50 bg-slate-900/70 p-2">
-                {new Date(match.finishedAtMs).toLocaleString()} |{" "}
-                {match.winner === "player" ? "Win" : "Loss"} |{" "}
-                {BOT_DIFFICULTY_LABELS[match.difficulty]} | rounds: {match.rounds} |
-                acc: {match.playerAccuracy}% | duration: {match.durationSec}s
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <h2 className="mb-3 text-lg font-semibold text-cyan-100">AI Coach</h2>
-        {!coachReport ? (
-          <p className="text-sm text-cyan-200/80">
-            Finish a match to get strategic feedback.
-          </p>
-        ) : (
-          <>
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-cyan-500/20 px-3 py-1 text-xs text-cyan-100">
-                {coachReport.headline}
-              </span>
-              <span
-                className={`rounded-full px-3 py-1 text-xs ${
-                  coachReport.verdict === "excellent"
-                    ? "bg-emerald-500/20 text-emerald-100"
-                    : coachReport.verdict === "solid"
-                    ? "bg-cyan-500/20 text-cyan-100"
-                    : "bg-amber-500/20 text-amber-100"
-                }`}
-              >
-                Verdict: {coachReport.verdict}
-              </span>
-            </div>
-            <ul className="space-y-1 text-sm text-cyan-100/90">
-              {coachReport.notes.map((note, index) => (
-                <li key={`${note}-${index}`}>- {note}</li>
-              ))}
-            </ul>
-          </>
-        )}
-      </section>
-
-      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <h2 className="mb-3 text-lg font-semibold text-cyan-100">Battle Board</h2>
-        <p className="mb-3 text-sm text-cyan-200/80">
-          You always see shot marks. Defense layer only reveals your ship
-          placement under those marks.
-        </p>
-        <div className="mb-3">
-          <label className="flex items-center gap-2 text-sm text-cyan-100/90">
-            <input
-              type="checkbox"
-              checked={showDefenseLayer}
-              onChange={(event) => setShowDefenseLayer(event.target.checked)}
+            <CarpetBoard
+              attackRadar={game.playerRadar}
+              defenseRadar={game.botRadar}
+              shipGrid={game.playerShipGrid}
+              playerShipHits={game.playerShipHits}
+              enemyShipGrid={game.enemyShipGrid}
+              enemyShipHits={game.enemyShipHits}
+              hitEffects={hitEffects}
+              showDefenseLayer={showDefenseLayer}
+              canShoot={game.turn === "player" && game.winner === null}
+              onCellClick={handleCellClick}
+              waterValue={WATER}
+              showSetupUi={false}
+              containerClassName="mx-auto w-full max-w-none"
+              enableHandStrike={false}
+              calibrationStorageKey="sea-war.carpet-board-boundary.v3"
             />
-            Show defense layer (my ships and bot shots)
-          </label>
+
+            <Image
+              src={UI_LOGO_URL}
+              alt="Logo"
+              width={564}
+              height={314}
+              className="pointer-events-none absolute left-[1.5%] top-[1.8%] w-[22%] max-w-[320px] select-none"
+            />
+
+            <button
+              type="button"
+              onClick={handleMenuToggle}
+              className="absolute z-30 w-[16%] max-w-[230px] min-w-[120px] -translate-x-[22px] cursor-pointer transition duration-150 hover:scale-[1.02] active:scale-[0.98]"
+              style={{
+                right: `${MENU_BUTTON_RIGHT_PCT}%`,
+                top: `${MENU_BUTTON_TOP_PCT}%`,
+              }}
+            >
+              <Image src={UI_MENU_BUTTON_URL} alt="Menu" width={489} height={150} />
+            </button>
+
+            <button
+              type="button"
+              onClick={handleStartClick}
+              className="absolute bottom-[0.7%] left-1/2 z-30 w-[18%] max-w-[260px] min-w-[150px] -translate-x-1/2 -translate-y-[14px] cursor-pointer transition duration-150 hover:scale-[1.03] active:scale-[0.97]"
+            >
+              <Image src={UI_START_BUTTON_URL} alt="Start" width={489} height={150} />
+            </button>
+
+            <Image
+              src={UI_DECOR_BLUE_URL}
+              alt=""
+              width={1067}
+              height={1364}
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-[-8.6%] left-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none"
+            />
+            <Image
+              src={UI_DECOR_RED_URL}
+              alt=""
+              width={1034}
+              height={1372}
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-[-8.6%] right-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none"
+            />
+
+            <Image
+              src={UI_HEALTH_BLUE_URL}
+              alt=""
+              width={2244}
+              height={412}
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-[0.55%] left-[1.25%] w-[30.5%] -translate-y-[14px] select-none"
+            />
+            <Image
+              src={UI_HEALTH_RED_URL}
+              alt=""
+              width={2214}
+              height={422}
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-[0.45%] right-[1.1%] w-[30.2%] -translate-y-[14px] select-none"
+            />
+
+            {startPanel !== null && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Close start panel"
+                  onClick={handleCloseStartPanel}
+                  className="absolute inset-0 z-[45]"
+                />
+                <div className="absolute bottom-[12.5%] left-1/2 z-50 w-[25.8%] min-w-[250px] max-w-[390px] -translate-x-1/2">
+                  <div className="relative">
+                    <Image
+                      src={startPanel === "online" ? UI_ONLINE_PANEL_URL : UI_LEVEL_PANEL_URL}
+                      alt={startPanel === "online" ? "Select game mode" : "Select bot level"}
+                      width={startPanel === "online" ? 819 : 1122}
+                      height={startPanel === "online" ? 1024 : 1402}
+                    />
+
+                    {startPanel === "online" ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleOnlinePanelChoice}
+                          className="absolute left-[8.5%] top-[41.4%] h-[15.4%] w-[83%] rounded-xl transition duration-150 hover:scale-[1.015] active:scale-[0.985]"
+                          aria-label="Online mode"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleOnlinePanelChoice}
+                          className="absolute left-[8.5%] top-[59.1%] h-[15.4%] w-[83%] rounded-xl transition duration-150 hover:scale-[1.015] active:scale-[0.985]"
+                          aria-label="Offline mode"
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleLevelChoice("easy")}
+                          className="absolute left-[7.6%] top-[37.9%] h-[15.6%] w-[84.8%] rounded-xl transition duration-150 hover:scale-[1.012] active:scale-[0.988]"
+                          aria-label="Baby level"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleLevelChoice("medium")}
+                          className="absolute left-[7.6%] top-[56.4%] h-[15.6%] w-[84.8%] rounded-xl transition duration-150 hover:scale-[1.012] active:scale-[0.988]"
+                          aria-label="Man level"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleLevelChoice("hard")}
+                          className="absolute left-[7.6%] top-[74.8%] h-[15.6%] w-[84.8%] rounded-xl transition duration-150 hover:scale-[1.012] active:scale-[0.988]"
+                          aria-label="Nightmare level"
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {isMenuOpen && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Close menu"
+                  onClick={() => setIsMenuOpen(false)}
+                  className="absolute inset-0 z-[35]"
+                />
+                <div
+                  className="absolute z-40 w-[19.6%] min-w-[210px] max-w-[330px]"
+                  style={{
+                    left: `${MENU_PANEL_CENTER_X_PCT}%`,
+                    top: `calc(${MENU_BUTTON_TOP_PCT}% + 96px)`,
+                    transform: "translate(calc(-50% - 10px), 0)",
+                  }}
+                >
+                  <div className="relative">
+                    <Image src={UI_MENU_PANEL_URL} alt="Menu panel" width={1058} height={1322} />
+
+                  <button
+                    type="button"
+                    onClick={() => handleSetSoundEnabled(true)}
+                    className="absolute left-[56.5%] top-[22.9%] h-[6.9%] w-[15.5%] rounded-full transition duration-150 hover:scale-[1.06] active:scale-[0.96]"
+                    aria-label="Sound on"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleSetSoundEnabled(false)}
+                    className="absolute left-[72.6%] top-[22.9%] h-[6.9%] w-[15.5%] rounded-full transition duration-150 hover:scale-[1.06] active:scale-[0.96]"
+                    aria-label="Sound off"
+                  />
+
+                  <div
+                    className={`pointer-events-none absolute top-[22.95%] h-[6.7%] w-[15.6%] rounded-full transition-all duration-200 ${
+                      isSoundEnabled
+                        ? "left-[56.45%] bg-lime-400/28 shadow-[0_0_14px_rgba(163,230,53,0.65)]"
+                        : "left-[72.55%] bg-lime-400/28 shadow-[0_0_14px_rgba(163,230,53,0.65)]"
+                    }`}
+                  />
+                  <div
+                    className={`pointer-events-none absolute top-[22.95%] h-[6.7%] w-[15.6%] rounded-full transition-all duration-200 ${
+                      isSoundEnabled
+                        ? "left-[72.55%] bg-black/40"
+                        : "left-[56.45%] bg-black/40"
+                    }`}
+                  />
+
+                    <button
+                      type="button"
+                      onClick={handleOpenStatistics}
+                      className="absolute left-[11.2%] top-[37.5%] h-[15.8%] w-[77.6%] rounded-xl transition duration-150 hover:scale-[1.03] active:scale-[0.97]"
+                      aria-label="Open statistics"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
-        <CarpetBoard
-          attackRadar={game.playerRadar}
-          defenseRadar={game.botRadar}
-          shipGrid={game.playerShipGrid}
-          showDefenseLayer={showDefenseLayer}
-          canShoot={game.turn === "player" && game.winner === null}
-          onCellClick={handleCellClick}
-          waterValue={WATER}
+
+        {isStatsOpen && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/72 p-4">
+            <div className="w-full max-w-2xl rounded-2xl border border-[#6c5130] bg-[#131313] p-5 text-[#f3e8d0] shadow-[0_24px_70px_rgba(0,0,0,0.6)]">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-xl font-bold">Statistics</h2>
+                <button
+                  type="button"
+                  onClick={handleCloseStatistics}
+                  className="rounded-md border border-[#8d6a42] px-3 py-1 text-sm hover:bg-[#272727]"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
+                <div>Total games: {totalGames}</div>
+                <div>Wins: {totalWins}</div>
+                <div>Losses: {totalLosses}</div>
+                <div>Win rate: {winRate}%</div>
+                <div>Avg accuracy: {avgPlayerAccuracy}%</div>
+                <div>Rounds (now): {game.round}</div>
+              </div>
+              <div className="mt-4">
+                <h3 className="mb-2 text-base font-semibold">Recent Matches</h3>
+                {history.length === 0 ? (
+                  <p className="text-sm text-[#d1c1a5]">No matches yet.</p>
+                ) : (
+                  <ul className="max-h-52 space-y-1 overflow-auto rounded-lg border border-[#3f3f3f] bg-black/30 p-2 text-sm">
+                    {history.slice(0, 8).map((match) => (
+                      <li key={match.id}>
+                        {new Date(match.finishedAtMs).toLocaleString()} |{" "}
+                        {match.winner === "player" ? "Win" : "Loss"} | acc:{" "}
+                        {match.playerAccuracy}% | {match.durationSec}s
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="mt-4 rounded-lg border border-[#6b532f]/70 bg-[#1a1a1a] p-3 text-sm text-[#dcc8a3]">
+                Leaderboard section reserved.
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div
+          className={`pointer-events-none absolute inset-0 z-[60] bg-black transition-opacity duration-[2000ms] ${
+            isSceneDimmed ? "opacity-100" : "opacity-0"
+          }`}
         />
-      </section>
 
-      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <h2 className="mb-3 text-lg font-semibold text-cyan-100">Recent Events</h2>
-        <ul className="space-y-1 text-sm text-cyan-100/90">
-          {game.log.map((item, index) => (
-            <li key={`${item}-${index}`}>{item}</li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
-        <h2 className="mb-3 text-lg font-semibold text-cyan-100">Realtime</h2>
-        <div className="flex flex-wrap gap-3 text-sm">
-          <span
-            className={`rounded-full px-3 py-1 font-medium ${
-              socketConnected
-                ? "bg-emerald-500/20 text-emerald-100"
-                : "bg-slate-900/80 text-cyan-100/90"
-            }`}
-          >
-            {socketConnected ? "Connected" : "Disconnected"}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Socket: {socketId}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Welcome: {welcomeMessage}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Last pong: {lastPong}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Queue waiting: {queueWaiting}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Connected clients: {queueConnected}
-          </span>
-          <span className="rounded-full border border-cyan-900/60 bg-slate-900/80 px-3 py-1 text-cyan-100/90">
-            Opponent: {matchedOpponentId ?? "none"}
-          </span>
-          <button
-            onClick={() => socketRef.current?.emit("client:ping")}
-            className="rounded-lg border border-cyan-500/70 bg-cyan-500/20 px-3 py-1 text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={!socketConnected}
-          >
-            Ping server
-          </button>
-          <button
-            onClick={() => socketRef.current?.emit("newGame")}
-            className="rounded-lg border border-cyan-500/70 bg-slate-900/80 px-3 py-1 text-cyan-100 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={!socketConnected}
-          >
-            Find opponent
-          </button>
-        </div>
-        <ul className="mt-3 space-y-1 text-xs text-cyan-200/80">
-          {socketSystemLog.length === 0 ? (
-            <li>No system events yet.</li>
-          ) : (
-            socketSystemLog.map((item, index) => (
-              <li key={`${item}-${index}`}>- {item}</li>
-            ))
-          )}
-        </ul>
-        <p className="mt-3 text-xs text-cyan-300/70">
-          Multiplayer relay events are server-ready (`newGame`, `ships`, `shot`,
-          `end`) and can be wired into a dedicated PvP screen next.
-        </p>
-      </section>
+        {isDoorOverlayVisible && (
+          <div className="absolute inset-0 z-[70] overflow-hidden bg-black">
+            <div className="absolute inset-y-0 left-0 w-1/2 overflow-hidden">
+              <Image
+                src={UI_DOOR_LEFT_URL}
+                alt=""
+                fill
+                sizes="50vw"
+                className={`object-cover object-left transition-transform duration-[1300ms] ease-in-out ${
+                  isDoorOpened ? "-translate-x-[102%]" : "translate-x-0"
+                }`}
+              />
+            </div>
+            <div className="absolute inset-y-0 right-0 w-1/2 overflow-hidden">
+              <Image
+                src={UI_DOOR_RIGHT_URL}
+                alt=""
+                fill
+                sizes="50vw"
+                className={`object-cover object-right transition-transform duration-[1300ms] ease-in-out ${
+                  isDoorOpened ? "translate-x-[102%]" : "translate-x-0"
+                }`}
+              />
+            </div>
+          </div>
+        )}
+      </div>
     </main>
   );
 }

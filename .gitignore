@@ -30,5 +30,5 @@ Thumbs.db
 
 # Local research clones and scratch data
 research/
-image/
-sound/
+/image/
+/sound/

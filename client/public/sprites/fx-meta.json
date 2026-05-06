@@ -1,0 +1,60 @@
+{
+  "hands": {
+    "left": {
+      "file": "/sprites/hand-left.png",
+      "width": 1106,
+      "height": 1022,
+      "anchor": {
+        "x": 1105,
+        "y": 141
+      },
+      "cropOffset": {
+        "x": 0,
+        "y": 232
+      }
+    },
+    "right": {
+      "file": "/sprites/hand-right.png",
+      "width": 971,
+      "height": 1184,
+      "anchor": {
+        "x": 0,
+        "y": 72
+      },
+      "cropOffset": {
+        "x": 235,
+        "y": 70
+      }
+    }
+  },
+  "splash": {
+    "framesPath": "/sprites/hit-splash-frames",
+    "frames": [
+      "frame-00.png",
+      "frame-01.png",
+      "frame-02.png",
+      "frame-03.png",
+      "frame-04.png",
+      "frame-05.png",
+      "frame-06.png",
+      "frame-07.png",
+      "frame-08.png",
+      "frame-09.png",
+      "frame-10.png",
+      "frame-11.png",
+      "frame-12.png",
+      "frame-13.png",
+      "frame-14.png",
+      "frame-15.png",
+      "frame-16.png",
+      "frame-17.png",
+      "frame-18.png",
+      "frame-19.png",
+      "frame-20.png",
+      "frame-21.png",
+      "frame-22.png"
+    ],
+    "frameCount": 23,
+    "frameDurationMs": 55
+  }
+}
