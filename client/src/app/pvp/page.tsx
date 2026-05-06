@@ -129,6 +129,27 @@ function readStoredPvpProfile(): PlayerProfile {
   }
 }
 
+function sanitizeRoomCode(raw: string): string {
+  return raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+}
+
+function readRoomCodeFromUrl(): string {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  return sanitizeRoomCode(params.get("room") ?? "");
+}
+
+function syncRoomCodeToUrl(roomCode: string | null): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (roomCode) {
+    url.searchParams.set("room", roomCode);
+  } else {
+    url.searchParams.delete("room");
+  }
+  window.history.replaceState({}, "", url.toString());
+}
+
 export default function PvpPage() {
   const [socketConnected, setSocketConnected] = useState(false);
   const [socketId, setSocketId] = useState("-");
@@ -142,6 +163,7 @@ export default function PvpPage() {
   const [notice, setNotice] = useState("Create room or join by code.");
   const [systemLog, setSystemLog] = useState<string[]>([]);
   const socketRef = useRef<Socket | null>(null);
+  const autoJoinTriedRef = useRef(false);
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
@@ -158,6 +180,25 @@ export default function PvpPage() {
       setSocketConnected(true);
       setSocketId(socket.id ?? "-");
       socket.emit("leaderboard:get");
+
+      if (!autoJoinTriedRef.current) {
+        autoJoinTriedRef.current = true;
+        const urlRoomCode = readRoomCodeFromUrl();
+        if (urlRoomCode) {
+          setJoinCode(urlRoomCode);
+          socket.emit(
+            "room:join",
+            { roomCode: urlRoomCode },
+            (response: RoomActionAck): void => {
+              if (!response.ok) {
+                setError(response.error ?? "Auto-join failed.");
+                return;
+              }
+              setNotice(`Joined room from invite: ${response.roomCode}`);
+            }
+          );
+        }
+      }
     });
 
     socket.on("disconnect", () => {
@@ -170,11 +211,13 @@ export default function PvpPage() {
       setRoomMode(payload.mode);
       setJoinCode(payload.roomCode);
       setNotice(payload.status);
+      syncRoomCodeToUrl(payload.roomCode);
     });
 
     socket.on("room:closed", (payload: RoomClosedPayload) => {
       setRoomView(null);
       setNotice(payload.reason ?? "Room closed.");
+      syncRoomCodeToUrl(null);
     });
 
     socket.on("system", (payload: SystemPayload) => {
@@ -347,6 +390,18 @@ export default function PvpPage() {
     socketRef.current?.emit("room:leave");
     setRoomView(null);
     setNotice("Left room.");
+    syncRoomCodeToUrl(null);
+  }
+
+  async function copyInviteLink(): Promise<void> {
+    if (!roomView?.roomCode || typeof window === "undefined") return;
+    const inviteUrl = `${window.location.origin}/pvp?room=${roomView.roomCode}`;
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setNotice("Invite link copied.");
+    } catch {
+      setError("Failed to copy invite link.");
+    }
   }
 
   function handleCellClick(row: number, col: number): void {
@@ -473,6 +528,13 @@ export default function PvpPage() {
             className="rounded-lg border border-rose-500/70 bg-rose-500/20 px-3 py-1 text-rose-100 transition hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Leave room
+          </button>
+          <button
+            onClick={copyInviteLink}
+            disabled={!roomView?.roomCode}
+            className="rounded-lg border border-cyan-500/70 bg-cyan-500/20 px-3 py-1 text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Copy invite link
           </button>
         </div>
         <p className="text-sm text-cyan-200/80">{notice}</p>
