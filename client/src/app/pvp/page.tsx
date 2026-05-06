@@ -4,6 +4,7 @@ import Link from "next/link";
 import { io, Socket } from "socket.io-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildPvpCoach, CoachReport } from "../../lib/coach";
+import { CarpetBoard } from "../../components/CarpetBoard";
 
 const BOARD_SIZE = 10;
 const WATER = -1;
@@ -89,13 +90,6 @@ function createGrid<T>(value: T): T[][] {
   return Array.from({ length: BOARD_SIZE }, () =>
     Array.from({ length: BOARD_SIZE }, () => value)
   );
-}
-
-function cellBaseClass(hasOwnShip: boolean, defenseMark: TurnMark): string {
-  if (defenseMark === "hit") return "bg-red-500/90";
-  if (hasOwnShip) return "bg-cyan-600/85";
-  if (defenseMark === "miss") return "bg-slate-300";
-  return "bg-slate-900";
 }
 
 function countRadarMarks(radar: TurnMark[][]): { shots: number; hits: number } {
@@ -669,37 +663,15 @@ export default function PvpPage() {
           />
           Show defense layer (my ships + incoming shots)
         </label>
-        <div
-          className="grid w-fit gap-1 rounded-xl border border-cyan-900/50 bg-slate-900/60 p-2"
-          style={{ gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))` }}
-        >
-          {playerShipGrid.map((row, rowIndex) =>
-            row.map((shipId, colIndex) => {
-              const defenseMark = defenseRadar[rowIndex][colIndex];
-              const attackMark = playerRadar[rowIndex][colIndex];
-              const hasShip = showDefenseLayer && shipId !== WATER;
-
-              return (
-                <button
-                  key={`pvp-cell-${rowIndex}-${colIndex}`}
-                  onClick={() => handleCellClick(rowIndex, colIndex)}
-                  disabled={!canShoot || attackMark !== "unknown"}
-                  className={`relative h-8 w-8 rounded-sm border border-cyan-900/60 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-80 ${cellBaseClass(
-                    hasShip,
-                    defenseMark
-                  )}`}
-                >
-                  {attackMark === "hit" && (
-                    <span className="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full bg-red-700 animate-pulse" />
-                  )}
-                  {attackMark === "miss" && (
-                    <span className="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full bg-slate-300" />
-                  )}
-                </button>
-              );
-            })
-          )}
-        </div>
+        <CarpetBoard
+          attackRadar={playerRadar}
+          defenseRadar={defenseRadar}
+          shipGrid={playerShipGrid}
+          showDefenseLayer={showDefenseLayer}
+          canShoot={canShoot}
+          onCellClick={handleCellClick}
+          waterValue={WATER}
+        />
       </section>
 
       <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">

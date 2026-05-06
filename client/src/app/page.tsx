@@ -4,6 +4,7 @@ import { io, Socket } from "socket.io-client";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildSoloCoach, CoachReport } from "../lib/coach";
+import { CarpetBoard } from "../components/CarpetBoard";
 
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
@@ -657,13 +658,6 @@ function resolveBotSalvo(state: GameState, difficulty: BotDifficulty): GameState
   };
 }
 
-function cellBaseClass(hasOwnShip: boolean, botMark: Mark): string {
-  if (botMark === "hit") return "bg-red-500/90";
-  if (hasOwnShip) return "bg-cyan-600/85";
-  if (botMark === "miss") return "bg-slate-300";
-  return "bg-slate-900";
-}
-
 export default function Home() {
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>(() =>
     readStoredDifficulty()
@@ -1054,42 +1048,15 @@ export default function Home() {
             Show defense layer (my ships and bot shots)
           </label>
         </div>
-        <div
-          className="grid w-fit gap-1 rounded-xl border border-cyan-900/50 bg-slate-900/60 p-2"
-          style={{ gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))` }}
-        >
-          {game.playerShipGrid.map((row, rowIndex) =>
-            row.map((shipId, colIndex) => {
-              const botMark = game.botRadar[rowIndex][colIndex];
-              const playerMark = game.playerRadar[rowIndex][colIndex];
-              const hasShip = showDefenseLayer && shipId !== WATER;
-
-              return (
-                <button
-                  key={`cell-${rowIndex}-${colIndex}`}
-                  onClick={() => handleCellClick(rowIndex, colIndex)}
-                  disabled={
-                    game.turn !== "player" ||
-                    game.winner !== null ||
-                    playerMark !== "unknown"
-                  }
-                  className={`relative h-8 w-8 rounded-sm border border-cyan-900/60 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-80 ${cellBaseClass(
-                    hasShip,
-                    botMark
-                  )}`}
-                  aria-label={`${rowIndex + 1}:${colIndex + 1}`}
-                >
-                  {playerMark === "hit" && (
-                    <span className="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full bg-red-700 animate-pulse" />
-                  )}
-                  {playerMark === "miss" && (
-                    <span className="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full bg-slate-300" />
-                  )}
-                </button>
-              );
-            })
-          )}
-        </div>
+        <CarpetBoard
+          attackRadar={game.playerRadar}
+          defenseRadar={game.botRadar}
+          shipGrid={game.playerShipGrid}
+          showDefenseLayer={showDefenseLayer}
+          canShoot={game.turn === "player" && game.winner === null}
+          onCellClick={handleCellClick}
+          waterValue={WATER}
+        />
       </section>
 
       <section className="rounded-2xl border border-cyan-900/70 bg-slate-950/70 p-4 shadow-[0_0_30px_rgba(8,145,178,0.12)] backdrop-blur-sm">
