@@ -2,6 +2,8 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import { createServer } from "http";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { Server, Socket } from "socket.io";
 
 const app = express();
@@ -17,6 +19,7 @@ const ROOM_TIMEOUT_SWEEP_MS = 500;
 const WATER = -1;
 const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const STATS_FILE_PATH = path.resolve(process.cwd(), "data", "pvp-stats.json");
 
 type OpponentId = string | null;
 type TurnMark = "unknown" | "miss" | "hit";
@@ -148,6 +151,64 @@ const rooms = new Map<string, RoomState>();
 const socketToRoom = new Map<string, string>();
 const socketProfiles = new Map<string, PlayerProfile>();
 const playerStats = new Map<string, PlayerStat>();
+
+function ensureStatsDirectory(): void {
+  const dirPath = path.dirname(STATS_FILE_PATH);
+  if (!existsSync(dirPath)) {
+    mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function loadPlayerStatsFromDisk(): void {
+  try {
+    if (!existsSync(STATS_FILE_PATH)) return;
+    const raw = readFileSync(STATS_FILE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as {
+      stats?: PlayerStat[];
+    };
+    if (!parsed || !Array.isArray(parsed.stats)) return;
+
+    for (const item of parsed.stats) {
+      if (
+        !item ||
+        typeof item.playerKey !== "string" ||
+        typeof item.name !== "string" ||
+        typeof item.city !== "string" ||
+        typeof item.games !== "number" ||
+        typeof item.wins !== "number" ||
+        typeof item.losses !== "number" ||
+        typeof item.shots !== "number" ||
+        typeof item.hits !== "number"
+      ) {
+        continue;
+      }
+
+      playerStats.set(item.playerKey, {
+        ...item,
+        updatedAtMs:
+          typeof item.updatedAtMs === "number" ? item.updatedAtMs : Date.now(),
+      });
+    }
+  } catch {
+    // Ignore load errors and keep empty stats.
+  }
+}
+
+function persistPlayerStatsToDisk(): void {
+  try {
+    ensureStatsDirectory();
+    const payload = {
+      version: 1,
+      updatedAtMs: Date.now(),
+      stats: Array.from(playerStats.values()),
+    };
+    const tempPath = `${STATS_FILE_PATH}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(payload, null, 2), "utf8");
+    renameSync(tempPath, STATS_FILE_PATH);
+  } catch {
+    // Ignore write errors to avoid impacting gameplay.
+  }
+}
 
 function getSocketById(socketId: string): Socket | undefined {
   return io.of("/").sockets.get(socketId);
@@ -411,6 +472,7 @@ function recordRoomResult(room: RoomState, winnerSocketId: string, loserSocketId
     loserRoundState.shotsFired,
     loserRoundState.hits
   );
+  persistPlayerStatsToDisk();
   emitLeaderboardUpdate();
 }
 
@@ -799,6 +861,8 @@ function leaveRoomBySocketId(socketId: string, reason?: string): void {
     emitRoomState(roomCode);
   }
 }
+
+loadPlayerStatsFromDisk();
 
 setInterval(() => {
   for (const room of rooms.values()) {
