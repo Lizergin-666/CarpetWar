@@ -5,11 +5,13 @@ import { io, Socket } from "socket.io-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildPvpCoach, CoachReport } from "../../lib/coach";
 import { CarpetBoard } from "../../components/CarpetBoard";
+import { VintageSoundToggle } from "../../components/VintageSoundToggle";
 
 const BOARD_SIZE = 10;
 const WATER = -1;
 const MISS_SOUND_URL = "/sound/smash1.mp3";
 const STORAGE_PVP_PROFILE_KEY = "sea-war.pvp-profile.v1";
+const STORAGE_SOUND_ENABLED_KEY = "sea-war.sound-enabled.v1";
 
 type TurnMark = "unknown" | "miss" | "hit";
 type RoomPhase = "lobby" | "playing" | "finished";
@@ -138,6 +140,17 @@ function readStoredPvpProfile(): PlayerProfile {
   }
 }
 
+function readStoredSoundEnabled(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const raw = localStorage.getItem(STORAGE_SOUND_ENABLED_KEY);
+    if (raw === null) return true;
+    return raw === "1";
+  } catch {
+    return true;
+  }
+}
+
 function sanitizeRoomCode(raw: string): string {
   return raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
 }
@@ -171,6 +184,9 @@ export default function PvpPage() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardPayload | null>(null);
   const [notice, setNotice] = useState("Create room or join by code.");
   const [systemLog, setSystemLog] = useState<string[]>([]);
+  const [isSoundEnabled, setIsSoundEnabled] = useState<boolean>(() =>
+    readStoredSoundEnabled()
+  );
   const socketRef = useRef<Socket | null>(null);
   const autoJoinTriedRef = useRef(false);
   const missSoundRef = useRef<HTMLAudioElement | null>(null);
@@ -281,11 +297,19 @@ export default function PvpPage() {
   }, [profileCity, profileName]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_SOUND_ENABLED_KEY, isSoundEnabled ? "1" : "0");
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [isSoundEnabled]);
+
+  useEffect(() => {
     const currentMisses = roomView?.playerRadar
       ? countMisses(roomView.playerRadar)
       : 0;
     const previousMisses = missCountRef.current;
-    if (currentMisses > previousMisses) {
+    if (isSoundEnabled && currentMisses > previousMisses) {
       const burst = currentMisses - previousMisses;
       for (let i = 0; i < burst; i += 1) {
         const base = missSoundRef.current;
@@ -298,7 +322,7 @@ export default function PvpPage() {
       }
     }
     missCountRef.current = currentMisses;
-  }, [roomView?.playerRadar]);
+  }, [roomView?.playerRadar, isSoundEnabled]);
 
   const coachReport: CoachReport | null = useMemo(() => {
     if (!roomView) return null;
@@ -496,6 +520,10 @@ export default function PvpPage() {
           <button className="rounded-lg border border-amber-400/70 bg-amber-500/20 px-3 py-1 text-xs font-medium text-amber-100 transition hover:bg-amber-500/30">
             Upgrade to Pro
           </button>
+          <VintageSoundToggle
+            enabled={isSoundEnabled}
+            onToggle={() => setIsSoundEnabled((prev) => !prev)}
+          />
         </div>
         <h1 className="text-2xl font-bold text-cyan-100">Sea War: Friend Room PvP</h1>
         <p className="mt-1 text-sm text-cyan-200/80">

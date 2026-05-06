@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildSoloCoach, CoachReport } from "../lib/coach";
 import { CarpetBoard } from "../components/CarpetBoard";
+import { VintageSoundToggle } from "../components/VintageSoundToggle";
 
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
@@ -15,6 +16,7 @@ const MISS_SOUND_URL = "/sound/smash1.mp3";
 const HISTORY_LIMIT = 25;
 const STORAGE_HISTORY_KEY = "sea-war.match-history.v1";
 const STORAGE_DIFFICULTY_KEY = "sea-war.bot-difficulty.v1";
+const STORAGE_SOUND_ENABLED_KEY = "sea-war.sound-enabled.v1";
 const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
 
 type Turn = "player" | "bot" | "finished";
@@ -134,6 +136,17 @@ function readStoredHistory(): MatchSummary[] {
       .slice(0, HISTORY_LIMIT);
   } catch {
     return [];
+  }
+}
+
+function readStoredSoundEnabled(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const raw = localStorage.getItem(STORAGE_SOUND_ENABLED_KEY);
+    if (raw === null) return true;
+    return raw === "1";
+  } catch {
+    return true;
   }
 }
 
@@ -680,6 +693,9 @@ export default function Home() {
   const [coachReport, setCoachReport] = useState<CoachReport | null>(null);
   const [showDefenseLayer, setShowDefenseLayer] = useState<boolean>(false);
   const [turnSecondsLeft, setTurnSecondsLeft] = useState<number>(PLAYER_TURN_SECONDS);
+  const [isSoundEnabled, setIsSoundEnabled] = useState<boolean>(() =>
+    readStoredSoundEnabled()
+  );
 
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [socketId, setSocketId] = useState<string>("-");
@@ -775,9 +791,17 @@ export default function Home() {
   }, [history]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_SOUND_ENABLED_KEY, isSoundEnabled ? "1" : "0");
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [isSoundEnabled]);
+
+  useEffect(() => {
     const currentMisses = countMisses(game.playerRadar);
     const previousMisses = missCountRef.current;
-    if (currentMisses > previousMisses) {
+    if (isSoundEnabled && currentMisses > previousMisses) {
       const burst = currentMisses - previousMisses;
       for (let i = 0; i < burst; i += 1) {
         const base = missSoundRef.current;
@@ -790,7 +814,7 @@ export default function Home() {
       }
     }
     missCountRef.current = currentMisses;
-  }, [game.playerRadar]);
+  }, [game.playerRadar, isSoundEnabled]);
 
   useEffect(() => {
     if (game.turn !== "player" || game.winner !== null) {
@@ -929,6 +953,10 @@ export default function Home() {
           <button className="rounded-lg border border-amber-400/70 bg-amber-500/20 px-3 py-1 text-xs font-medium text-amber-100 transition hover:bg-amber-500/30">
             Upgrade to Pro
           </button>
+          <VintageSoundToggle
+            enabled={isSoundEnabled}
+            onToggle={() => setIsSoundEnabled((prev) => !prev)}
+          />
         </div>
         <h1 className="text-2xl font-bold text-cyan-100">Sea War: Single Board</h1>
         <p className="mt-1 text-sm text-cyan-200/80">
