@@ -152,6 +152,18 @@ interface OnlinePlacementShipDraft {
   col: number;
   horizontal: boolean;
   placed: boolean;
+  visual?: PlacementShipVisual;
+  visualLocked?: boolean;
+}
+
+interface PlacementShipVisual {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  anchorXPct: number;
+  anchorYPct: number;
+  rotationDeg: number;
 }
 
 interface RoomActionAck {
@@ -265,15 +277,12 @@ interface UiCalibrationConfig {
 
 type ShipCursorHandle = "move" | "resize-width" | "resize-height" | "resize-both" | "rotate";
 
-interface ShipCursorDragState {
+interface PlacedShipVisualDragState {
+  length: number;
   handle: ShipCursorHandle;
-  orientation: "horizontal" | "vertical";
   startClientX: number;
   startClientY: number;
-  startConfig: ShipCursorCalibration;
-  startWidth: number;
-  startHeight: number;
-  length: number;
+  startVisual: PlacementShipVisual;
 }
 
 const DEFAULT_UI_CALIBRATION: UiCalibrationConfig = {
@@ -1252,8 +1261,9 @@ export default function Home() {
   const [shipCalibrationOrientation, setShipCalibrationOrientation] = useState<
     "horizontal" | "vertical"
   >("horizontal");
-  const [shipCursorDragState, setShipCursorDragState] = useState<ShipCursorDragState | null>(null);
-  const [shipCursorPinned, setShipCursorPinned] = useState<boolean>(false);
+  const [activePlacedVisualLength, setActivePlacedVisualLength] = useState<number | null>(null);
+  const [placedShipVisualDragState, setPlacedShipVisualDragState] =
+    useState<PlacedShipVisualDragState | null>(null);
 
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [roomView, setRoomView] = useState<RoomViewPayload | null>(null);
@@ -1296,7 +1306,6 @@ export default function Home() {
   const onlineRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
   const lastPlacementSignatureRef = useRef<string>("");
-  const boardFrameRef = useRef<HTMLDivElement | null>(null);
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
@@ -1918,6 +1927,8 @@ export default function Home() {
     setSelectedPlacementLength(null);
     setPlacementHoverCell(null);
     setPlacementCursorPos(null);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
     setGame(createGameState(soloPlacementDifficulty, placement));
   }, [placementDraft, soloPlacementDifficulty]);
 
@@ -1936,8 +1947,8 @@ export default function Home() {
     if (roomView?.phase !== "placement") {
       setPlacementHoverCell(null);
       setPlacementCursorPos(null);
-      setShipCursorPinned(false);
-      setShipCursorDragState(null);
+      setActivePlacedVisualLength(null);
+      setPlacedShipVisualDragState(null);
       return;
     }
     if (!roomView.yourPlacementReady) {
@@ -1951,8 +1962,8 @@ export default function Home() {
 
   useEffect(() => {
     if (isPlacementInteractionActive) return;
-    setShipCursorPinned(false);
-    setShipCursorDragState(null);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
   }, [isPlacementInteractionActive]);
 
   function resetGame(nextDifficulty?: BotDifficulty): void {
@@ -1962,6 +1973,8 @@ export default function Home() {
     setHitEffects([]);
     setGameMode("solo");
     setSoloPlacementActive(false);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
   }
 
   function beginSoloPlacement(nextDifficulty: BotDifficulty): void {
@@ -1973,6 +1986,8 @@ export default function Home() {
     setSelectedPlacementLength(ONLINE_PLACEMENT_FLEET[0]);
     setPlacementHoverCell(null);
     setPlacementCursorPos(null);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
     setCoachReport(null);
     setHitEffects([]);
   }
@@ -2035,6 +2050,7 @@ export default function Home() {
 
   function handlePlacementCellClick(row: number, col: number): void {
     if (!isPlacementInteractionActive) return;
+    if (isUiCalibrationMode && activePlacedVisualLength !== null) return;
     if (selectedPlacementLength === null) return;
     const selected = placementDraft.find((ship) => ship.length === selectedPlacementLength);
     if (!selected) return;
@@ -2050,19 +2066,32 @@ export default function Home() {
     if (!valid) return;
 
     setPlacementDraft((prev) => {
+      const placedVisual = buildPlacedShipVisual(selected.length);
       const next = prev.map((ship) =>
         ship.length === selected.length
-          ? { ...ship, row, col, placed: true }
+          ? {
+              ...ship,
+              row,
+              col,
+              placed: true,
+              visual: placedVisual,
+              visualLocked: !isUiCalibrationMode,
+            }
           : ship
       );
       if (isOnlinePlacementPhase) {
         submitPlacementIfReady(next);
       }
-      const unplaced = next.find((ship) => !ship.placed);
-      if (unplaced) {
-        setSelectedPlacementLength(unplaced.length);
-      } else if (soloPlacementActive) {
+      if (isUiCalibrationMode) {
+        setActivePlacedVisualLength(selected.length);
         setSelectedPlacementLength(null);
+      } else {
+        const unplaced = next.find((ship) => !ship.placed);
+        if (unplaced) {
+          setSelectedPlacementLength(unplaced.length);
+        } else if (soloPlacementActive) {
+          setSelectedPlacementLength(null);
+        }
       }
       return next;
     });
@@ -2326,8 +2355,8 @@ export default function Home() {
   function enterUiCalibrationMode(): void {
     setUiCalibrationDraft(cloneUiCalibration(uiCalibration));
     setIsUiCalibrationMode(true);
-    setShipCursorPinned(false);
-    setShipCursorDragState(null);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
     setStartPanel("online");
     setIsMenuOpen(true);
   }
@@ -2335,8 +2364,8 @@ export default function Home() {
   function cancelUiCalibrationMode(): void {
     setUiCalibrationDraft(cloneUiCalibration(uiCalibration));
     setIsUiCalibrationMode(false);
-    setShipCursorPinned(false);
-    setShipCursorDragState(null);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
   }
 
   function saveUiCalibrationMode(): void {
@@ -2344,8 +2373,8 @@ export default function Home() {
     setUiCalibration(normalized);
     setUiCalibrationDraft(cloneUiCalibration(normalized));
     setIsUiCalibrationMode(false);
-    setShipCursorPinned(false);
-    setShipCursorDragState(null);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
     if (typeof window !== "undefined") {
       localStorage.setItem(UI_CALIBRATION_STORAGE_KEY, JSON.stringify(normalized));
     }
@@ -2353,23 +2382,8 @@ export default function Home() {
 
   function resetUiCalibrationMode(): void {
     setUiCalibrationDraft(cloneUiCalibration(DEFAULT_UI_CALIBRATION));
-    setShipCursorPinned(false);
-    setShipCursorDragState(null);
-  }
-
-  function toggleShipCursorPin(): void {
-    if (!isUiCalibrationMode || !isPlacementInteractionActive) return;
-    if (shipCursorPinned) {
-      setShipCursorPinned(false);
-      return;
-    }
-    if (!placementCursorPos) {
-      const rect = boardFrameRef.current?.getBoundingClientRect();
-      if (rect) {
-        setPlacementCursorPos({ x: rect.width * 0.5, y: rect.height * 0.55 });
-      }
-    }
-    setShipCursorPinned(true);
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
   }
 
   function updateCalibrationRect(
@@ -2413,67 +2427,103 @@ export default function Home() {
     );
   }
 
-  function beginShipCursorDrag(handle: ShipCursorHandle, event: ReactPointerEvent): void {
+  function buildPlacedShipVisual(length: number): PlacementShipVisual {
+    return {
+      x: (placementCursorPos?.x ?? 0) + activeShipCursorCalibration.offsetXPx,
+      y: (placementCursorPos?.y ?? 0) + activeShipCursorCalibration.offsetYPx,
+      width: placementCursorWidth,
+      height: placementCursorHeight,
+      anchorXPct: activeShipCursorCalibration.anchorXPct,
+      anchorYPct: activeShipCursorCalibration.anchorYPct,
+      rotationDeg: activeShipCursorCalibration.rotationDeg,
+    };
+  }
+
+  function updatePlacedShipVisual(
+    length: number,
+    updater: (visual: PlacementShipVisual) => PlacementShipVisual
+  ): void {
+    setPlacementDraft((prev) =>
+      prev.map((ship) => {
+        if (ship.length !== length || !ship.visual) return ship;
+        return { ...ship, visual: updater(ship.visual) };
+      })
+    );
+  }
+
+  function beginPlacedShipVisualDrag(
+    length: number,
+    handle: ShipCursorHandle,
+    event: ReactPointerEvent
+  ): void {
     if (!isUiCalibrationMode) return;
-    if (!isPlacementInteractionActive) return;
-    if (selectedPlacementLength === null) return;
+    const ship = placementDraft.find((item) => item.length === length);
+    if (!ship?.visual) return;
     event.preventDefault();
     event.stopPropagation();
-    setShipCursorPinned(true);
-    setShipCursorDragState({
+    setPlacedShipVisualDragState({
+      length,
       handle,
-      orientation: selectedPlacementHorizontal ? "horizontal" : "vertical",
       startClientX: event.clientX,
       startClientY: event.clientY,
-      startConfig: { ...activeShipCursorCalibration },
-      startWidth: placementCursorWidth,
-      startHeight: placementCursorHeight,
-      length: selectedPlacementLength,
+      startVisual: { ...ship.visual },
     });
   }
 
+  function confirmPlacedShipVisual(length: number): void {
+    setPlacementDraft((prev) =>
+      prev.map((ship) =>
+        ship.length === length ? { ...ship, visualLocked: true } : ship
+      )
+    );
+    setActivePlacedVisualLength(null);
+    setPlacedShipVisualDragState(null);
+    const nextUnplaced = placementDraft.find((ship) => !ship.placed && ship.length !== length);
+    setSelectedPlacementLength(nextUnplaced ? nextUnplaced.length : null);
+  }
+
   useEffect(() => {
-    if (!shipCursorDragState || !isUiCalibrationMode) return;
-    const drag = shipCursorDragState;
-    const orientation = drag.orientation;
+    if (!placedShipVisualDragState || !isUiCalibrationMode) return;
+    const drag = placedShipVisualDragState;
+    const orientation = drag.startVisual.width >= drag.startVisual.height ? "horizontal" : "vertical";
 
     const onPointerMove = (event: PointerEvent): void => {
       const dx = event.clientX - drag.startClientX;
       const dy = event.clientY - drag.startClientY;
-      const patch: Partial<ShipCursorCalibration> = {};
 
-      if (drag.handle === "move") {
-        patch.offsetXPx = drag.startConfig.offsetXPx + dx;
-        patch.offsetYPx = drag.startConfig.offsetYPx + dy;
-      }
-
-      if (drag.handle === "rotate") {
-        patch.rotationDeg = drag.startConfig.rotationDeg + dx * 0.45;
-      }
-
-      if (drag.handle === "resize-width" || drag.handle === "resize-both") {
-        const nextWidth = Math.max(16, drag.startWidth + dx);
-        if (orientation === "horizontal") {
-          patch.deckSizePx = nextWidth / Math.max(1, drag.length);
-        } else {
-          patch.thicknessPx = nextWidth;
+      updatePlacedShipVisual(drag.length, (visual) => {
+        const next = { ...visual };
+        if (drag.handle === "move") {
+          next.x = drag.startVisual.x + dx;
+          next.y = drag.startVisual.y + dy;
         }
-      }
-
-      if (drag.handle === "resize-height" || drag.handle === "resize-both") {
-        const nextHeight = Math.max(16, drag.startHeight + dy);
-        if (orientation === "horizontal") {
-          patch.thicknessPx = nextHeight;
-        } else {
-          patch.deckSizePx = nextHeight / Math.max(1, drag.length);
+        if (drag.handle === "rotate") {
+          next.rotationDeg = drag.startVisual.rotationDeg + dx * 0.45;
         }
-      }
+        if (drag.handle === "resize-width" || drag.handle === "resize-both") {
+          next.width = Math.max(16, drag.startVisual.width + dx);
+        }
+        if (drag.handle === "resize-height" || drag.handle === "resize-both") {
+          next.height = Math.max(16, drag.startVisual.height + dy);
+        }
+        return next;
+      });
 
-      updateShipCursorCalibration(orientation, patch);
+      if (orientation === "horizontal") {
+        updateShipCursorCalibration("horizontal", {
+          deckSizePx: Math.max(24, (drag.startVisual.width + dx) / Math.max(1, drag.length)),
+          thicknessPx: Math.max(16, drag.startVisual.height + dy),
+        });
+      } else {
+        updateShipCursorCalibration("vertical", {
+          deckSizePx: Math.max(24, (drag.startVisual.height + dy) / Math.max(1, drag.length)),
+          thicknessPx: Math.max(16, drag.startVisual.width + dx),
+        });
+      }
     };
 
     const onPointerUp = (): void => {
-      setShipCursorDragState(null);
+      setPlacedShipVisualDragState(null);
     };
 
     window.addEventListener("pointermove", onPointerMove);
@@ -2482,7 +2532,7 @@ export default function Home() {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
     };
-  }, [isUiCalibrationMode, shipCursorDragState]);
+  }, [isUiCalibrationMode, placedShipVisualDragState]);
 
   const shipCalibrationTarget =
     shipCalibrationOrientation === "horizontal"
@@ -2494,13 +2544,11 @@ export default function Home() {
       <div className="relative h-full w-full">
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <div
-            ref={boardFrameRef}
             className="relative overflow-hidden"
             style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
             onMouseMove={(event) => {
               if (!isPlacementInteractionActive) return;
               if (selectedPlacementLength === null) return;
-              if (shipCursorPinned) return;
               const rect = event.currentTarget.getBoundingClientRect();
               setPlacementCursorPos({
                 x: event.clientX - rect.left,
@@ -2508,7 +2556,6 @@ export default function Home() {
               });
             }}
             onMouseLeave={() => {
-              if (shipCursorPinned) return;
               setPlacementCursorPos(null);
               if (isPlacementInteractionActive) {
                 setPlacementHoverCell(null);
@@ -2586,13 +2633,21 @@ export default function Home() {
                     <button
                       key={`placement-ship-${ship.length}`}
                       type="button"
-                      disabled={!isPlacementInteractionActive}
-                      onClick={() => setSelectedPlacementLength(ship.length)}
+                      disabled={
+                        !isPlacementInteractionActive ||
+                        (isUiCalibrationMode && activePlacedVisualLength !== null)
+                      }
+                      onClick={() => {
+                        if (isUiCalibrationMode && activePlacedVisualLength !== null) return;
+                        setSelectedPlacementLength(ship.length);
+                      }}
                       className={`relative aspect-[4/1.2] w-full transition ${
                         selected ? "scale-[1.04]" : "scale-100"
                       } ${ship.placed ? "opacity-100" : "opacity-85"} ${
                         !isPlacementInteractionActive
                           ? "cursor-default"
+                          : isUiCalibrationMode && activePlacedVisualLength !== null
+                          ? "cursor-not-allowed opacity-70"
                           : "cursor-pointer hover:scale-[1.06]"
                       }`}
                       title={`Ship ${ship.length} cells`}
@@ -2615,8 +2670,9 @@ export default function Home() {
                 <div className="mt-1 rounded-md border border-[#5f4a2d] bg-black/45 px-2 py-1 text-[11px] text-[#eddcb8]">
                   {soloPlacementActive ? (
                     <div>
-                      Place all ships, then press Start Battle. Double-click on board to rotate
-                      selected ship.
+                      {isUiCalibrationMode && activePlacedVisualLength !== null
+                        ? `Adjust ship ${activePlacedVisualLength} with points and press OK.`
+                        : "Place ship, adjust points, press OK. Double-click rotates ship."}
                     </div>
                   ) : (
                     <div>
@@ -2639,6 +2695,76 @@ export default function Home() {
             )}
 
             {isPlacementInteractionActive &&
+              placementDraft
+                .filter((ship) => ship.placed && ship.visual)
+                .map((ship) => {
+                  const visual = ship.visual as PlacementShipVisual;
+                  const editing = isUiCalibrationMode && activePlacedVisualLength === ship.length;
+                  return (
+                    <div
+                      key={`placed-visual-${ship.length}`}
+                      className="absolute z-[47]"
+                      style={{
+                        width: `${visual.width}px`,
+                        height: `${visual.height}px`,
+                        left: `${visual.x}px`,
+                        top: `${visual.y}px`,
+                        transform: `translate(-${visual.anchorXPct}%, -${visual.anchorYPct}%) rotate(${visual.rotationDeg}deg)`,
+                        transformOrigin: "center center",
+                      }}
+                    >
+                      <img
+                        src={SHIP_ICON_BY_LENGTH[ship.length]}
+                        alt=""
+                        className="pointer-events-none h-full w-full opacity-90"
+                      />
+                      {editing && (
+                        <>
+                          <div
+                            className="pointer-events-auto absolute -left-2 -top-2 h-4 w-4 cursor-nwse-resize rounded-full border border-cyan-100 bg-cyan-500/90"
+                            onPointerDown={(event) =>
+                              beginPlacedShipVisualDrag(ship.length, "resize-both", event)
+                            }
+                          />
+                          <div
+                            className="pointer-events-auto absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 cursor-ew-resize rounded-full border border-cyan-100 bg-cyan-500/90"
+                            onPointerDown={(event) =>
+                              beginPlacedShipVisualDrag(ship.length, "resize-width", event)
+                            }
+                          />
+                          <div
+                            className="pointer-events-auto absolute left-1/2 -bottom-2 h-4 w-4 -translate-x-1/2 cursor-ns-resize rounded-full border border-cyan-100 bg-cyan-500/90"
+                            onPointerDown={(event) =>
+                              beginPlacedShipVisualDrag(ship.length, "resize-height", event)
+                            }
+                          />
+                          <div
+                            className="pointer-events-auto absolute left-1/2 -top-8 h-4 w-4 -translate-x-1/2 cursor-grab rounded-full border border-amber-200 bg-amber-500/90 active:cursor-grabbing"
+                            onPointerDown={(event) =>
+                              beginPlacedShipVisualDrag(ship.length, "rotate", event)
+                            }
+                          />
+                          <div
+                            className="pointer-events-auto absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border border-emerald-200 bg-emerald-500/90"
+                            onPointerDown={(event) =>
+                              beginPlacedShipVisualDrag(ship.length, "move", event)
+                            }
+                          />
+                          <button
+                            type="button"
+                            onClick={() => confirmPlacedShipVisual(ship.length)}
+                            className="absolute -right-12 -top-8 rounded border border-emerald-400/80 bg-emerald-500/85 px-2 py-0.5 text-[10px] font-semibold text-[#05200f]"
+                            style={{ transform: `rotate(${-visual.rotationDeg}deg)` }}
+                          >
+                            OK
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+            {isPlacementInteractionActive &&
               selectedPlacementLength !== null &&
               placementCursorPos && (
                 <div
@@ -2657,30 +2783,6 @@ export default function Home() {
                     alt=""
                     className="pointer-events-none h-full w-full opacity-75"
                   />
-                  {isUiCalibrationMode && (
-                    <>
-                      <div
-                        className="pointer-events-auto absolute -left-2 -top-2 h-4 w-4 cursor-nwse-resize rounded-full border border-cyan-100 bg-cyan-500/90"
-                        onPointerDown={(event) => beginShipCursorDrag("resize-both", event)}
-                      />
-                      <div
-                        className="pointer-events-auto absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 cursor-ew-resize rounded-full border border-cyan-100 bg-cyan-500/90"
-                        onPointerDown={(event) => beginShipCursorDrag("resize-width", event)}
-                      />
-                      <div
-                        className="pointer-events-auto absolute left-1/2 -bottom-2 h-4 w-4 -translate-x-1/2 cursor-ns-resize rounded-full border border-cyan-100 bg-cyan-500/90"
-                        onPointerDown={(event) => beginShipCursorDrag("resize-height", event)}
-                      />
-                      <div
-                        className="pointer-events-auto absolute left-1/2 -top-8 h-4 w-4 -translate-x-1/2 cursor-grab rounded-full border border-amber-200 bg-amber-500/90 active:cursor-grabbing"
-                        onPointerDown={(event) => beginShipCursorDrag("rotate", event)}
-                      />
-                      <div
-                        className="pointer-events-auto absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border border-emerald-200 bg-emerald-500/90"
-                        onPointerDown={(event) => beginShipCursorDrag("move", event)}
-                      />
-                    </>
-                  )}
                 </div>
               )}
 
@@ -3133,39 +3235,26 @@ export default function Home() {
               <div className="mt-3 rounded border border-cyan-900/50 bg-black/40 p-2">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="text-[10px] font-semibold text-cyan-100">Ship Cursor</div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={toggleShipCursorPin}
-                      className={`rounded border px-2 py-1 text-[10px] ${
-                        shipCursorPinned
-                          ? "border-amber-500/80 bg-amber-500/25 text-amber-100"
-                          : "border-cyan-500/70 bg-cyan-500/20 text-cyan-100"
-                      }`}
-                    >
-                      {shipCursorPinned ? "Unpin cursor" : "Pin cursor"}
-                    </button>
-                    <button
-                      type="button"
-                      onDoubleClick={() =>
-                        setShipCalibrationOrientation((prev) =>
-                          prev === "horizontal" ? "vertical" : "horizontal"
-                        )
-                      }
-                      onClick={() =>
-                        setShipCalibrationOrientation((prev) =>
-                          prev === "horizontal" ? "vertical" : "horizontal"
-                        )
-                      }
-                      className="rounded border border-cyan-500/70 bg-cyan-500/20 px-2 py-1 text-[10px] text-cyan-100"
-                    >
-                      {shipCalibrationOrientation.toUpperCase()}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onDoubleClick={() =>
+                      setShipCalibrationOrientation((prev) =>
+                        prev === "horizontal" ? "vertical" : "horizontal"
+                      )
+                    }
+                    onClick={() =>
+                      setShipCalibrationOrientation((prev) =>
+                        prev === "horizontal" ? "vertical" : "horizontal"
+                      )
+                    }
+                    className="rounded border border-cyan-500/70 bg-cyan-500/20 px-2 py-1 text-[10px] text-cyan-100"
+                  >
+                    {shipCalibrationOrientation.toUpperCase()}
+                  </button>
                 </div>
                 <div className="mb-2 text-[10px] text-cyan-100/80">
-                  Tip: press Pin cursor, then drag handle points around the ship. Double-click on
-                  board rotates ship orientation.
+                  Tip: place ship, adjust with handles, press OK. Double-click on board rotates
+                  ship orientation.
                 </div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1">
                   <label>
