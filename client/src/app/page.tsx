@@ -21,7 +21,7 @@ const STORAGE_HISTORY_KEY = "sea-war.match-history.v1";
 const STORAGE_DIFFICULTY_KEY = "sea-war.bot-difficulty.v1";
 const STORAGE_SOUND_ENABLED_KEY = "sea-war.sound-enabled.v1";
 const STORAGE_PVP_PROFILE_KEY = "sea-war.pvp-profile.v1";
-const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
+const FLEET = [5, 4, 3, 2, 1] as const;
 const UI_LOGO_URL = "/ui/logo-main.png";
 const UI_MENU_BUTTON_URL = "/ui/btn-menu.png";
 const UI_START_BUTTON_URL = "/ui/btn-start.png";
@@ -54,7 +54,7 @@ const MENU_PANEL_WIDTH_PCT = 19.6;
 const MENU_PANEL_CENTER_X_PCT =
   100 - MENU_BUTTON_RIGHT_PCT - MENU_BUTTON_WIDTH_PCT / 2;
 const ONLINE_PLACEMENT_SECONDS = 20;
-const ONLINE_PLACEMENT_FLEET = [5, 4, 3, 2, 1] as const;
+const ONLINE_PLACEMENT_FLEET = FLEET;
 const SHIP_ICON_BY_LENGTH: Record<number, string> = {
   1: "/ui/ships/ship-1.png",
   2: "/ui/ships/ship-2.png",
@@ -399,6 +399,72 @@ function getShipCells(
 
 function allDraftShipsPlaced(draftShips: OnlinePlacementShipDraft[]): boolean {
   return draftShips.every((ship) => ship.placed);
+}
+
+function completeDraftWithAutoPlacement(
+  draftShips: OnlinePlacementShipDraft[]
+): OnlinePlacementShipDraft[] {
+  const next = draftShips.map((ship) => ({ ...ship }));
+
+  for (const ship of next) {
+    if (ship.placed) continue;
+    let placed = false;
+
+    for (let tries = 0; tries < 1800; tries += 1) {
+      const horizontal = Math.random() < 0.5;
+      const row = randomInt(horizontal ? BOARD_SIZE : BOARD_SIZE - ship.length + 1);
+      const col = randomInt(horizontal ? BOARD_SIZE - ship.length + 1 : BOARD_SIZE);
+      const occupied = buildPlacementGrid(next, ship.length);
+      if (!canPlaceDraftShip(occupied, row, col, ship.length, horizontal)) continue;
+      ship.row = row;
+      ship.col = col;
+      ship.horizontal = horizontal;
+      ship.placed = true;
+      placed = true;
+      break;
+    }
+
+    if (!placed) {
+      for (let row = 0; row < BOARD_SIZE; row += 1) {
+        for (let col = 0; col < BOARD_SIZE; col += 1) {
+          for (const horizontal of [true, false]) {
+            const occupied = buildPlacementGrid(next, ship.length);
+            if (!canPlaceDraftShip(occupied, row, col, ship.length, horizontal)) continue;
+            ship.row = row;
+            ship.col = col;
+            ship.horizontal = horizontal;
+            ship.placed = true;
+            placed = true;
+            break;
+          }
+          if (placed) break;
+        }
+        if (placed) break;
+      }
+    }
+  }
+
+  return next;
+}
+
+function placementFromDraft(draftShips: OnlinePlacementShipDraft[]): Placement {
+  const shipGrid = createGrid<number>(WATER);
+  const shipLengths: number[] = [];
+  let shipId = 0;
+
+  for (const ship of draftShips) {
+    if (!ship.placed) continue;
+    for (let i = 0; i < ship.length; i += 1) {
+      const row = ship.horizontal ? ship.row : ship.row + i;
+      const col = ship.horizontal ? ship.col + i : ship.col;
+      if (!isInsideBoard(row, col)) continue;
+      shipGrid[row][col] = shipId;
+    }
+    shipLengths.push(ship.length);
+    shipId += 1;
+  }
+
+  return { shipGrid, shipLengths };
 }
 
 function countRadarMarks(radar: Mark[][]): { shots: number; hits: number } {
@@ -883,8 +949,8 @@ function autoFireRemainingShots(state: GameState): GameState {
   return nextState;
 }
 
-function createGameState(botDifficulty: BotDifficulty): GameState {
-  const playerPlacement = placeFleetRandomly(FLEET);
+function createGameState(botDifficulty: BotDifficulty, playerPlacementOverride?: Placement): GameState {
+  const playerPlacement = playerPlacementOverride ?? placeFleetRandomly(FLEET);
   const enemyPlacement = placeFleetRandomly(FLEET);
 
   return {
@@ -895,8 +961,8 @@ function createGameState(botDifficulty: BotDifficulty): GameState {
     enemyShipGrid: enemyPlacement.shipGrid,
     playerShipLengths: playerPlacement.shipLengths,
     enemyShipLengths: enemyPlacement.shipLengths,
-    playerShipHits: Array.from({ length: FLEET.length }, () => 0),
-    enemyShipHits: Array.from({ length: FLEET.length }, () => 0),
+    playerShipHits: Array.from({ length: playerPlacement.shipLengths.length }, () => 0),
+    enemyShipHits: Array.from({ length: enemyPlacement.shipLengths.length }, () => 0),
     playerShotsFired: 0,
     playerHits: 0,
     botShotsFired: 0,
@@ -909,7 +975,9 @@ function createGameState(botDifficulty: BotDifficulty): GameState {
     winner: null,
     status: "Your turn: fire 3 shots.",
     log: [
-      `Game started. Fleet placed automatically. Bot: ${BOT_DIFFICULTY_LABELS[botDifficulty]}.`,
+      playerPlacementOverride
+        ? `Game started. Your fleet locked manually. Bot: ${BOT_DIFFICULTY_LABELS[botDifficulty]}.`
+        : `Game started. Fleet placed automatically. Bot: ${BOT_DIFFICULTY_LABELS[botDifficulty]}.`,
     ],
     round: 1,
   };
@@ -996,6 +1064,13 @@ export default function Home() {
   const [roomView, setRoomView] = useState<RoomViewPayload | null>(null);
   const [joinCode, setJoinCode] = useState<string>("");
   const [roomMode, setRoomMode] = useState<RoomMode>("classic");
+  const [soloPlacementActive, setSoloPlacementActive] = useState<boolean>(false);
+  const [soloPlacementSecondsLeft, setSoloPlacementSecondsLeft] = useState<number>(
+    ONLINE_PLACEMENT_SECONDS
+  );
+  const [soloPlacementDifficulty, setSoloPlacementDifficulty] = useState<BotDifficulty>(
+    readStoredDifficulty()
+  );
   const [placementDraft, setPlacementDraft] = useState<OnlinePlacementShipDraft[]>(
     () => createOnlinePlacementDraft()
   );
@@ -1502,6 +1577,8 @@ export default function Home() {
   const onlinePlayerRadar = roomView?.playerRadar ?? createGrid<Mark>("unknown");
   const onlineDefenseRadar = roomView?.defenseRadar ?? createGrid<Mark>("unknown");
   const isOnlinePlacementPhase = gameMode === "online" && roomView?.phase === "placement";
+  const isPlacementInteractionActive =
+    soloPlacementActive || (isOnlinePlacementPhase && !roomView?.yourPlacementReady);
   const placedDraftGrid = useMemo(() => buildPlacementGrid(placementDraft), [placementDraft]);
   const selectedPlacementShip =
     selectedPlacementLength === null
@@ -1509,10 +1586,9 @@ export default function Home() {
       : placementDraft.find((ship) => ship.length === selectedPlacementLength) ?? null;
   const selectedPlacementHorizontal = selectedPlacementShip?.horizontal ?? true;
   const placementPreview = useMemo(() => {
-    if (!isOnlinePlacementPhase) return null;
+    if (!isPlacementInteractionActive) return null;
     if (!selectedPlacementShip) return null;
     if (!placementHoverCell) return null;
-    if (roomView?.yourPlacementReady) return null;
     const occupiedWithoutSelected = buildPlacementGrid(placementDraft, selectedPlacementShip.length);
     const valid = canPlaceDraftShip(
       occupiedWithoutSelected,
@@ -1529,10 +1605,9 @@ export default function Home() {
     );
     return { valid, cells };
   }, [
-    isOnlinePlacementPhase,
+    isPlacementInteractionActive,
     selectedPlacementShip,
     placementHoverCell,
-    roomView?.yourPlacementReady,
     placementDraft,
   ]);
   const placementHighlights = useMemo(() => {
@@ -1555,6 +1630,12 @@ export default function Home() {
     () => deriveShipHits(onlineShipGrid, onlineDefenseRadar, WATER),
     [onlineDefenseRadar, onlineShipGrid]
   );
+  const soloEmptyRadar = useMemo(() => createGrid<Mark>("unknown"), []);
+  const soloAttackRadar = soloPlacementActive ? soloEmptyRadar : game.playerRadar;
+  const soloDefenseRadar = soloPlacementActive ? soloEmptyRadar : game.botRadar;
+  const soloShipGrid = soloPlacementActive ? placedDraftGrid : game.playerShipGrid;
+  const soloShowDefenseLayer = soloPlacementActive ? true : showDefenseLayer;
+  const soloCanShoot = !soloPlacementActive && game.turn === "player" && game.winner === null;
   const hiddenEnemyShipGrid = useMemo(() => createGrid<number>(WATER), []);
   const hiddenEnemyShipHits = useMemo(() => [] as number[], []);
   const onlineShowDefenseLayer =
@@ -1613,6 +1694,26 @@ export default function Home() {
     : coachReport
     ? "Solo match analysis"
     : null;
+  const activePlacementSecondsLeft = soloPlacementActive
+    ? soloPlacementSecondsLeft
+    : roomView?.placementSecondsLeft ?? ONLINE_PLACEMENT_SECONDS;
+  const activePlacementYouReady = soloPlacementActive
+    ? allDraftShipsPlaced(placementDraft)
+    : Boolean(roomView?.yourPlacementReady);
+  const activePlacementOpponentReady = soloPlacementActive
+    ? false
+    : Boolean(roomView?.opponentPlacementReady);
+  const finalizeSoloPlacement = useCallback((): void => {
+    const completedDraft = completeDraftWithAutoPlacement(placementDraft);
+    const placement = placementFromDraft(completedDraft);
+    setPlacementDraft(completedDraft);
+    setSoloPlacementActive(false);
+    setSoloPlacementSecondsLeft(ONLINE_PLACEMENT_SECONDS);
+    setSelectedPlacementLength(null);
+    setPlacementHoverCell(null);
+    setPlacementCursorPos(null);
+    setGame(createGameState(soloPlacementDifficulty, placement));
+  }, [placementDraft, soloPlacementDifficulty]);
 
   useEffect(() => {
     if (gameMode !== "solo") return;
@@ -1623,6 +1724,20 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     resetHitEffects();
   }, [game.enemyShipHits, game.id, game.playerRadar, resetHitEffects, gameMode]);
+
+  useEffect(() => {
+    if (!soloPlacementActive) return;
+    if (soloPlacementSecondsLeft <= 0) {
+      finalizeSoloPlacement();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSoloPlacementSecondsLeft((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [finalizeSoloPlacement, soloPlacementActive, soloPlacementSecondsLeft]);
 
   useEffect(() => {
     if (gameMode !== "online") return;
@@ -1646,11 +1761,26 @@ export default function Home() {
     setCoachReport(null);
     setHitEffects([]);
     setGameMode("solo");
+    setSoloPlacementActive(false);
+    setSoloPlacementSecondsLeft(ONLINE_PLACEMENT_SECONDS);
+  }
+
+  function beginSoloPlacement(nextDifficulty: BotDifficulty): void {
+    setBotDifficulty(nextDifficulty);
+    setSoloPlacementDifficulty(nextDifficulty);
+    setGameMode("solo");
+    setSoloPlacementActive(true);
+    setSoloPlacementSecondsLeft(ONLINE_PLACEMENT_SECONDS);
+    setPlacementDraft(createOnlinePlacementDraft());
+    setSelectedPlacementLength(ONLINE_PLACEMENT_FLEET[0]);
+    setPlacementHoverCell(null);
+    setPlacementCursorPos(null);
+    setCoachReport(null);
+    setHitEffects([]);
   }
 
   function togglePlacementOrientation(): void {
-    if (!isOnlinePlacementPhase) return;
-    if (roomView?.yourPlacementReady) return;
+    if (!isPlacementInteractionActive) return;
     if (selectedPlacementLength === null) return;
     setPlacementDraft((prev) =>
       prev.map((ship) =>
@@ -1662,7 +1792,7 @@ export default function Home() {
   }
 
   function handlePlacementHover(row: number, col: number): void {
-    if (!isOnlinePlacementPhase) return;
+    if (!isPlacementInteractionActive) return;
     setPlacementHoverCell({ row, col });
   }
 
@@ -1706,9 +1836,7 @@ export default function Home() {
   }
 
   function handlePlacementCellClick(row: number, col: number): void {
-    if (!isOnlinePlacementPhase) return;
-    if (!roomView || roomView.phase !== "placement") return;
-    if (roomView.yourPlacementReady) return;
+    if (!isPlacementInteractionActive) return;
     if (selectedPlacementLength === null) return;
     const selected = placementDraft.find((ship) => ship.length === selectedPlacementLength);
     if (!selected) return;
@@ -1729,10 +1857,17 @@ export default function Home() {
           ? { ...ship, row, col, placed: true }
           : ship
       );
-      submitPlacementIfReady(next);
+      if (isOnlinePlacementPhase) {
+        submitPlacementIfReady(next);
+      }
       const unplaced = next.find((ship) => !ship.placed);
       if (unplaced) {
         setSelectedPlacementLength(unplaced.length);
+      } else if (soloPlacementActive) {
+        setSelectedPlacementLength(null);
+        window.setTimeout(() => {
+          finalizeSoloPlacement();
+        }, 120);
       }
       return next;
     });
@@ -1754,6 +1889,10 @@ export default function Home() {
   }
 
   function handleCellClick(row: number, col: number): void {
+    if (soloPlacementActive) {
+      handlePlacementCellClick(row, col);
+      return;
+    }
     if (gameMode === "online") {
       if (roomView?.phase === "placement") {
         handlePlacementCellClick(row, col);
@@ -1800,8 +1939,7 @@ export default function Home() {
 
   function handleLevelChoice(nextDifficulty: BotDifficulty): void {
     playButtonClickSound();
-    setBotDifficulty(nextDifficulty);
-    resetGame(nextDifficulty);
+    beginSoloPlacement(nextDifficulty);
     setStartPanel(null);
   }
 
@@ -1996,8 +2134,7 @@ export default function Home() {
             className="relative overflow-hidden"
             style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
             onMouseMove={(event) => {
-              if (!isOnlinePlacementPhase) return;
-              if (roomView?.yourPlacementReady) return;
+              if (!isPlacementInteractionActive) return;
               if (selectedPlacementLength === null) return;
               const rect = event.currentTarget.getBoundingClientRect();
               setPlacementCursorPos({
@@ -2007,21 +2144,20 @@ export default function Home() {
             }}
             onMouseLeave={() => {
               setPlacementCursorPos(null);
-              if (isOnlinePlacementPhase) {
+              if (isPlacementInteractionActive) {
                 setPlacementHoverCell(null);
               }
             }}
             onContextMenu={(event) => {
-              if (!isOnlinePlacementPhase) return;
-              if (roomView?.yourPlacementReady) return;
+              if (!isPlacementInteractionActive) return;
               event.preventDefault();
               togglePlacementOrientation();
             }}
           >
             <CarpetBoard
-              attackRadar={gameMode === "online" ? onlinePlayerRadar : game.playerRadar}
-              defenseRadar={gameMode === "online" ? onlineDefenseRadar : game.botRadar}
-              shipGrid={gameMode === "online" ? onlineShipGrid : game.playerShipGrid}
+              attackRadar={gameMode === "online" ? onlinePlayerRadar : soloAttackRadar}
+              defenseRadar={gameMode === "online" ? onlineDefenseRadar : soloDefenseRadar}
+              shipGrid={gameMode === "online" ? onlineShipGrid : soloShipGrid}
               playerShipHits={gameMode === "online" ? onlineShipHits : game.playerShipHits}
               enemyShipGrid={
                 gameMode === "online" ? hiddenEnemyShipGrid : game.enemyShipGrid
@@ -2031,12 +2167,12 @@ export default function Home() {
               }
               hitEffects={hitEffects}
               showDefenseLayer={
-                gameMode === "online" ? onlineShowDefenseLayer : showDefenseLayer
+                gameMode === "online" ? onlineShowDefenseLayer : soloShowDefenseLayer
               }
               canShoot={
                 gameMode === "online"
                   ? Boolean(onlineCanShoot)
-                  : game.turn === "player" && game.winner === null
+                  : soloCanShoot
               }
               onCellClick={handleCellClick}
               waterValue={WATER}
@@ -2044,7 +2180,7 @@ export default function Home() {
               containerClassName="mx-auto w-full max-w-none"
               enableHandStrike={false}
               calibrationStorageKey="sea-war.carpet-board-boundary.v3"
-              placementMode={Boolean(isOnlinePlacementPhase)}
+              placementMode={Boolean(isPlacementInteractionActive)}
               placementHighlights={placementHighlights}
               onPlacementCellHover={handlePlacementHover}
               onPlacementLeave={handlePlacementLeave}
@@ -2059,7 +2195,7 @@ export default function Home() {
               className="pointer-events-none absolute left-[1.5%] top-[1.8%] w-[22%] max-w-[320px] select-none"
             />
 
-            {isOnlinePlacementPhase && (
+            {isPlacementInteractionActive && (
               <div
                 className="absolute z-40 flex w-[12.4%] min-w-[120px] max-w-[200px] flex-col gap-1.5"
                 style={{
@@ -2073,12 +2209,12 @@ export default function Home() {
                     <button
                       key={`placement-ship-${ship.length}`}
                       type="button"
-                      disabled={Boolean(roomView?.yourPlacementReady)}
+                      disabled={!isPlacementInteractionActive}
                       onClick={() => setSelectedPlacementLength(ship.length)}
                       className={`relative aspect-[4/1.2] w-full transition ${
                         selected ? "scale-[1.04]" : "scale-100"
                       } ${ship.placed ? "opacity-100" : "opacity-85"} ${
-                        roomView?.yourPlacementReady
+                        !isPlacementInteractionActive
                           ? "cursor-default"
                           : "cursor-pointer hover:scale-[1.06]"
                       }`}
@@ -2100,17 +2236,16 @@ export default function Home() {
                   );
                 })}
                 <div className="mt-1 rounded-md border border-[#5f4a2d] bg-black/45 px-2 py-1 text-[11px] text-[#eddcb8]">
-                  <div>Placement: {roomView?.placementSecondsLeft ?? ONLINE_PLACEMENT_SECONDS}s</div>
+                  <div>Placement: {activePlacementSecondsLeft}s</div>
                   <div>
-                    You: {roomView?.yourPlacementReady ? "ready" : "placing"} | Opponent:{" "}
-                    {roomView?.opponentPlacementReady ? "ready" : "placing"}
+                    You: {activePlacementYouReady ? "ready" : "placing"} | Opponent:{" "}
+                    {activePlacementOpponentReady ? "ready" : "placing"}
                   </div>
                 </div>
               </div>
             )}
 
-            {isOnlinePlacementPhase &&
-              !roomView?.yourPlacementReady &&
+            {isPlacementInteractionActive &&
               selectedPlacementLength !== null &&
               placementCursorPos && (
                 <img
