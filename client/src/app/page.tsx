@@ -1306,6 +1306,8 @@ export default function Home() {
   const onlineRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
   const lastPlacementSignatureRef = useRef<string>("");
+  const boardFrameRef = useRef<HTMLDivElement | null>(null);
+  const lastPointerPosRef = useRef<{ x: number; y: number } | null>(null);
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
@@ -1927,6 +1929,7 @@ export default function Home() {
     setSelectedPlacementLength(null);
     setPlacementHoverCell(null);
     setPlacementCursorPos(null);
+    lastPointerPosRef.current = null;
     setActivePlacedVisualLength(null);
     setPlacedShipVisualDragState(null);
     setGame(createGameState(soloPlacementDifficulty, placement));
@@ -1973,6 +1976,7 @@ export default function Home() {
     setHitEffects([]);
     setGameMode("solo");
     setSoloPlacementActive(false);
+    lastPointerPosRef.current = null;
     setActivePlacedVisualLength(null);
     setPlacedShipVisualDragState(null);
   }
@@ -1986,6 +1990,7 @@ export default function Home() {
     setSelectedPlacementLength(ONLINE_PLACEMENT_FLEET[0]);
     setPlacementHoverCell(null);
     setPlacementCursorPos(null);
+    lastPointerPosRef.current = null;
     setActivePlacedVisualLength(null);
     setPlacedShipVisualDragState(null);
     setCoachReport(null);
@@ -2055,11 +2060,16 @@ export default function Home() {
     const selected = placementDraft.find((ship) => ship.length === selectedPlacementLength);
     if (!selected) return;
 
+    const maxRow = selected.horizontal ? BOARD_SIZE - 1 : BOARD_SIZE - selected.length;
+    const maxCol = selected.horizontal ? BOARD_SIZE - selected.length : BOARD_SIZE - 1;
+    const targetRow = Math.round(clampNumber(row, 0, Math.max(0, maxRow)));
+    const targetCol = Math.round(clampNumber(col, 0, Math.max(0, maxCol)));
+
     const occupiedWithoutSelected = buildPlacementGrid(placementDraft, selected.length);
     const valid = canPlaceDraftShip(
       occupiedWithoutSelected,
-      row,
-      col,
+      targetRow,
+      targetCol,
       selected.length,
       selected.horizontal
     );
@@ -2071,8 +2081,8 @@ export default function Home() {
         ship.length === selected.length
           ? {
               ...ship,
-              row,
-              col,
+              row: targetRow,
+              col: targetCol,
               placed: true,
               visual: placedVisual,
               visualLocked: !isUiCalibrationMode,
@@ -2428,9 +2438,15 @@ export default function Home() {
   }
 
   function buildPlacedShipVisual(length: number): PlacementShipVisual {
+    let fallback = lastPointerPosRef.current;
+    if (!fallback && boardFrameRef.current) {
+      const rect = boardFrameRef.current.getBoundingClientRect();
+      fallback = { x: rect.width * 0.5, y: rect.height * 0.55 };
+    }
+    const base = placementCursorPos ?? fallback ?? { x: 0, y: 0 };
     return {
-      x: (placementCursorPos?.x ?? 0) + activeShipCursorCalibration.offsetXPx,
-      y: (placementCursorPos?.y ?? 0) + activeShipCursorCalibration.offsetYPx,
+      x: base.x + activeShipCursorCalibration.offsetXPx,
+      y: base.y + activeShipCursorCalibration.offsetYPx,
       width: placementCursorWidth,
       height: placementCursorHeight,
       anchorXPct: activeShipCursorCalibration.anchorXPct,
@@ -2471,15 +2487,16 @@ export default function Home() {
   }
 
   function confirmPlacedShipVisual(length: number): void {
-    setPlacementDraft((prev) =>
-      prev.map((ship) =>
+    setPlacementDraft((prev) => {
+      const next = prev.map((ship) =>
         ship.length === length ? { ...ship, visualLocked: true } : ship
-      )
-    );
+      );
+      const nextUnplaced = next.find((ship) => !ship.placed);
+      setSelectedPlacementLength(nextUnplaced ? nextUnplaced.length : null);
+      return next;
+    });
     setActivePlacedVisualLength(null);
     setPlacedShipVisualDragState(null);
-    const nextUnplaced = placementDraft.find((ship) => !ship.placed && ship.length !== length);
-    setSelectedPlacementLength(nextUnplaced ? nextUnplaced.length : null);
   }
 
   useEffect(() => {
@@ -2544,16 +2561,26 @@ export default function Home() {
       <div className="relative h-full w-full">
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <div
+            ref={boardFrameRef}
             className="relative overflow-hidden"
             style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
+            onPointerDownCapture={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              lastPointerPosRef.current = {
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top,
+              };
+            }}
             onMouseMove={(event) => {
               if (!isPlacementInteractionActive) return;
               if (selectedPlacementLength === null) return;
               const rect = event.currentTarget.getBoundingClientRect();
-              setPlacementCursorPos({
+              const point = {
                 x: event.clientX - rect.left,
                 y: event.clientY - rect.top,
-              });
+              };
+              lastPointerPosRef.current = point;
+              setPlacementCursorPos(point);
             }}
             onMouseLeave={() => {
               setPlacementCursorPos(null);
