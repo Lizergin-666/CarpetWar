@@ -4,7 +4,7 @@ import { io, Socket } from "socket.io-client";
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient, type User } from "@supabase/supabase-js";
-import { buildSoloCoach, CoachReport } from "../lib/coach";
+import { buildPvpCoach, buildSoloCoach, CoachReport } from "../lib/coach";
 import { CarpetBoard } from "../components/CarpetBoard";
 
 const BOARD_SIZE = 10;
@@ -66,6 +66,31 @@ type RoomMode = "classic" | "blitz3m";
 interface PlayerProfile {
   name: string;
   city: string;
+}
+
+interface LeaderboardEntry {
+  playerKey: string;
+  name: string;
+  city: string;
+  games: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  accuracy: number;
+  winRate: number;
+  score: number;
+}
+
+interface CityLeaderboard {
+  city: string;
+  totalGames: number;
+  players: LeaderboardEntry[];
+}
+
+interface LeaderboardPayload {
+  updatedAtMs: number;
+  global: LeaderboardEntry[];
+  byCity: CityLeaderboard[];
 }
 
 interface RoomViewPayload {
@@ -274,6 +299,23 @@ function createGrid<T>(value: T): T[][] {
 
 function cloneGrid<T>(grid: T[][]): T[][] {
   return grid.map((row) => row.slice());
+}
+
+function countRadarMarks(radar: Mark[][]): { shots: number; hits: number } {
+  let shots = 0;
+  let hits = 0;
+  for (let row = 0; row < radar.length; row += 1) {
+    for (let col = 0; col < radar[row].length; col += 1) {
+      const mark = radar[row][col];
+      if (mark === "hit") {
+        hits += 1;
+        shots += 1;
+      } else if (mark === "miss") {
+        shots += 1;
+      }
+    }
+  }
+  return { shots, hits };
 }
 
 function randomInt(maxExclusive: number): number {
@@ -839,6 +881,7 @@ export default function Home() {
   );
   const [history, setHistory] = useState<MatchSummary[]>(() => readStoredHistory());
   const [coachReport, setCoachReport] = useState<CoachReport | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardPayload | null>(null);
   const [hitEffects, setHitEffects] = useState<HitEffect[]>([]);
   const [isSoundEnabled, setIsSoundEnabled] = useState<boolean>(true);
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
@@ -976,6 +1019,10 @@ export default function Home() {
       setOnlineNotice(item);
     });
 
+    socket.on("leaderboard:update", (payload: LeaderboardPayload) => {
+      setLeaderboard(payload);
+    });
+
     return () => {
       socket.disconnect();
       socketRef.current = null;
@@ -1053,6 +1100,11 @@ export default function Home() {
       // Ignore storage failures.
     }
   }, [isSoundEnabled]);
+
+  useEffect(() => {
+    if (!isStatsOpen) return;
+    socketRef.current?.emit("leaderboard:get");
+  }, [isStatsOpen]);
 
   useEffect(() => {
     try {
@@ -1362,6 +1414,30 @@ export default function Home() {
           history.reduce((sum, match) => sum + match.playerAccuracy, 0) / totalGames
         )
       : 0;
+  const pvpCoachReport: CoachReport | null = useMemo(() => {
+    if (!roomView) return null;
+    if (roomView.phase !== "finished" || roomView.winner === null) return null;
+
+    const yourStats = countRadarMarks(roomView.playerRadar);
+    const opponentStats = countRadarMarks(roomView.defenseRadar);
+
+    return buildPvpCoach({
+      winner: roomView.winner,
+      rounds: roomView.round,
+      yourShots: yourStats.shots,
+      yourHits: yourStats.hits,
+      opponentShots: opponentStats.shots,
+      opponentHits: opponentStats.hits,
+      yourDecksLeft: roomView.yourDecksLeft,
+      enemyDecksLeft: roomView.enemyDecksLeft,
+    });
+  }, [roomView]);
+  const activeCoachReport = pvpCoachReport ?? coachReport;
+  const coachSourceLabel = pvpCoachReport
+    ? "PvP match analysis"
+    : coachReport
+    ? "Solo match analysis"
+    : null;
 
   useEffect(() => {
     if (gameMode !== "solo") return;
@@ -1592,10 +1668,15 @@ export default function Home() {
     playButtonClickSound();
     setIsMenuOpen(false);
     setIsStatsOpen(true);
+    socketRef.current?.emit("leaderboard:get");
   }
 
   function handleCloseStatistics(): void {
     setIsStatsOpen(false);
+  }
+
+  function handleRefreshLeaderboard(): void {
+    socketRef.current?.emit("leaderboard:get");
   }
 
   function handleSetSoundEnabled(nextEnabled: boolean): void {
@@ -1898,16 +1979,25 @@ export default function Home() {
 
         {isStatsOpen && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/72 p-4">
-            <div className="w-full max-w-2xl rounded-2xl border border-[#6c5130] bg-[#131313] p-5 text-[#f3e8d0] shadow-[0_24px_70px_rgba(0,0,0,0.6)]">
+            <div className="max-h-[88vh] w-full max-w-5xl overflow-auto rounded-2xl border border-[#6c5130] bg-[#131313] p-5 text-[#f3e8d0] shadow-[0_24px_70px_rgba(0,0,0,0.6)]">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-xl font-bold">Statistics</h2>
-                <button
-                  type="button"
-                  onClick={handleCloseStatistics}
-                  className="rounded-md border border-[#8d6a42] px-3 py-1 text-sm hover:bg-[#272727]"
-                >
-                  Close
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRefreshLeaderboard}
+                    className="rounded-md border border-[#8d6a42] px-3 py-1 text-sm hover:bg-[#272727]"
+                  >
+                    Refresh leaderboard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCloseStatistics}
+                    className="rounded-md border border-[#8d6a42] px-3 py-1 text-sm hover:bg-[#272727]"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
                 <div>Total games: {totalGames}</div>
@@ -1916,6 +2006,43 @@ export default function Home() {
                 <div>Win rate: {winRate}%</div>
                 <div>Avg accuracy: {avgPlayerAccuracy}%</div>
                 <div>Rounds (now): {game.round}</div>
+              </div>
+              <div className="mt-4 rounded-lg border border-[#6b532f]/70 bg-[#1a1a1a] p-3 text-sm text-[#dcc8a3]">
+                <h3 className="mb-2 text-base font-semibold text-[#f3e8d0]">AI Coach</h3>
+                {!activeCoachReport ? (
+                  <p className="text-sm text-[#d1c1a5]">
+                    Finish a solo or online match to unlock tactical analysis.
+                  </p>
+                ) : (
+                  <>
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-cyan-500/20 px-3 py-1 text-xs text-cyan-100">
+                        {activeCoachReport.headline}
+                      </span>
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs ${
+                          activeCoachReport.verdict === "excellent"
+                            ? "bg-emerald-500/20 text-emerald-100"
+                            : activeCoachReport.verdict === "solid"
+                            ? "bg-cyan-500/20 text-cyan-100"
+                            : "bg-amber-500/20 text-amber-100"
+                        }`}
+                      >
+                        Verdict: {activeCoachReport.verdict}
+                      </span>
+                      {coachSourceLabel && (
+                        <span className="rounded-full border border-[#8d6a42] px-3 py-1 text-xs text-[#e6d1ad]">
+                          {coachSourceLabel}
+                        </span>
+                      )}
+                    </div>
+                    <ul className="space-y-1 text-sm">
+                      {activeCoachReport.notes.map((note, index) => (
+                        <li key={`${note}-${index}`}>- {note}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
               </div>
               <div className="mt-4">
                 <h3 className="mb-2 text-base font-semibold">Recent Matches</h3>
@@ -1934,7 +2061,65 @@ export default function Home() {
                 )}
               </div>
               <div className="mt-4 rounded-lg border border-[#6b532f]/70 bg-[#1a1a1a] p-3 text-sm text-[#dcc8a3]">
-                Leaderboard section reserved.
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-base font-semibold text-[#f3e8d0]">Leaderboard</h3>
+                  <span className="text-xs text-[#b89f76]">
+                    {leaderboard
+                      ? `Updated: ${new Date(leaderboard.updatedAtMs).toLocaleTimeString()}`
+                      : "Waiting for server data..."}
+                  </span>
+                </div>
+                {!leaderboard ? (
+                  <p className="text-sm text-[#d1c1a5]">Leaderboard is loading...</p>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <div>
+                      <h4 className="mb-1 text-sm font-semibold text-[#e8d6b9]">
+                        Global Top
+                      </h4>
+                      {leaderboard.global.length === 0 ? (
+                        <p className="text-xs text-[#d1c1a5]">No ranked matches yet.</p>
+                      ) : (
+                        <ul className="max-h-56 space-y-1 overflow-auto rounded-lg border border-[#3f3f3f] bg-black/25 p-2 text-xs">
+                          {leaderboard.global.slice(0, 10).map((entry, index) => (
+                            <li key={entry.playerKey}>
+                              #{index + 1} {entry.name} ({entry.city}) | W:{entry.wins} D:
+                              {entry.draws} L:{entry.losses} | Acc:{entry.accuracy}% |
+                              Score:{entry.score}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div>
+                      <h4 className="mb-1 text-sm font-semibold text-[#e8d6b9]">Top Cities</h4>
+                      {leaderboard.byCity.length === 0 ? (
+                        <p className="text-xs text-[#d1c1a5]">City leaderboard is empty.</p>
+                      ) : (
+                        <ul className="max-h-56 space-y-2 overflow-auto rounded-lg border border-[#3f3f3f] bg-black/25 p-2 text-xs">
+                          {leaderboard.byCity.slice(0, 6).map((cityBoard) => (
+                            <li
+                              key={cityBoard.city}
+                              className="rounded-md border border-[#5a4a31] bg-[#101010] p-2"
+                            >
+                              <div className="font-medium">
+                                {cityBoard.city} | games: {cityBoard.totalGames}
+                              </div>
+                              <div className="mt-1 space-y-1">
+                                {cityBoard.players.slice(0, 3).map((entry, idx) => (
+                                  <div key={`${cityBoard.city}-${entry.playerKey}`}>
+                                    {idx + 1}. {entry.name} | W:{entry.wins} D:{entry.draws}
+                                    L:{entry.losses} | Score:{entry.score}
+                                  </div>
+                                ))}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
