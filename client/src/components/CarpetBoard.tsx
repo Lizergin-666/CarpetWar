@@ -1072,6 +1072,11 @@ export function CarpetBoard({
                 event.preventDefault();
                 onPlacementRotate?.();
               }}
+              onDoubleClick={(event) => {
+                if (!placementMode) return;
+                event.preventDefault();
+                onPlacementRotate?.();
+              }}
             />
 
             {attackMark === "hit" && !hasAttackOverlay && (
