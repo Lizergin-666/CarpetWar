@@ -2,7 +2,15 @@
 
 import { io, Socket } from "socket.io-client";
 import Image from "next/image";
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createClient, type User } from "@supabase/supabase-js";
 import { buildPvpCoach, buildSoloCoach, CoachReport } from "../lib/coach";
 import { CarpetBoard } from "../components/CarpetBoard";
@@ -244,6 +252,10 @@ interface ShipCursorCalibration {
 interface UiCalibrationConfig {
   onlineButton: CalibrationRect;
   offlineButton: CalibrationRect;
+  babyButton: CalibrationRect;
+  manButton: CalibrationRect;
+  nightmareButton: CalibrationRect;
+  soundButton: CalibrationRect;
   statButton: CalibrationRect;
   leaderButton: CalibrationRect;
   loginButton: CalibrationRect;
@@ -251,9 +263,26 @@ interface UiCalibrationConfig {
   shipCursorVertical: ShipCursorCalibration;
 }
 
+type ShipCursorHandle = "move" | "resize-width" | "resize-height" | "resize-both" | "rotate";
+
+interface ShipCursorDragState {
+  handle: ShipCursorHandle;
+  orientation: "horizontal" | "vertical";
+  startClientX: number;
+  startClientY: number;
+  startConfig: ShipCursorCalibration;
+  startWidth: number;
+  startHeight: number;
+  length: number;
+}
+
 const DEFAULT_UI_CALIBRATION: UiCalibrationConfig = {
   onlineButton: { leftPct: 8.5, topPct: 41.4, widthPct: 83, heightPct: 15.4 },
   offlineButton: { leftPct: 8.5, topPct: 59.1, widthPct: 83, heightPct: 15.4 },
+  babyButton: { leftPct: 7.6, topPct: 37.9, widthPct: 84.8, heightPct: 15.6 },
+  manButton: { leftPct: 7.6, topPct: 56.4, widthPct: 84.8, heightPct: 15.6 },
+  nightmareButton: { leftPct: 7.6, topPct: 74.8, widthPct: 84.8, heightPct: 15.6 },
+  soundButton: { leftPct: 11.1, topPct: 20.4, widthPct: 77.8, heightPct: 13.2 },
   statButton: { leftPct: 11.1, topPct: 38.2, widthPct: 77.8, heightPct: 13.2 },
   leaderButton: { leftPct: 11.1, topPct: 55.9, widthPct: 77.8, heightPct: 13.2 },
   loginButton: { leftPct: 11.1, topPct: 73.6, widthPct: 77.8, heightPct: 13.2 },
@@ -309,6 +338,10 @@ function normalizeUiCalibration(config: UiCalibrationConfig): UiCalibrationConfi
   return {
     onlineButton: normalizeCalibrationRect(config.onlineButton),
     offlineButton: normalizeCalibrationRect(config.offlineButton),
+    babyButton: normalizeCalibrationRect(config.babyButton),
+    manButton: normalizeCalibrationRect(config.manButton),
+    nightmareButton: normalizeCalibrationRect(config.nightmareButton),
+    soundButton: normalizeCalibrationRect(config.soundButton),
     statButton: normalizeCalibrationRect(config.statButton),
     leaderButton: normalizeCalibrationRect(config.leaderButton),
     loginButton: normalizeCalibrationRect(config.loginButton),
@@ -321,6 +354,10 @@ function cloneUiCalibration(config: UiCalibrationConfig): UiCalibrationConfig {
   return {
     onlineButton: { ...config.onlineButton },
     offlineButton: { ...config.offlineButton },
+    babyButton: { ...config.babyButton },
+    manButton: { ...config.manButton },
+    nightmareButton: { ...config.nightmareButton },
+    soundButton: { ...config.soundButton },
     statButton: { ...config.statButton },
     leaderButton: { ...config.leaderButton },
     loginButton: { ...config.loginButton },
@@ -338,6 +375,10 @@ function readStoredUiCalibration(): UiCalibrationConfig {
     const merged: UiCalibrationConfig = {
       onlineButton: { ...DEFAULT_UI_CALIBRATION.onlineButton, ...parsed.onlineButton },
       offlineButton: { ...DEFAULT_UI_CALIBRATION.offlineButton, ...parsed.offlineButton },
+      babyButton: { ...DEFAULT_UI_CALIBRATION.babyButton, ...parsed.babyButton },
+      manButton: { ...DEFAULT_UI_CALIBRATION.manButton, ...parsed.manButton },
+      nightmareButton: { ...DEFAULT_UI_CALIBRATION.nightmareButton, ...parsed.nightmareButton },
+      soundButton: { ...DEFAULT_UI_CALIBRATION.soundButton, ...parsed.soundButton },
       statButton: { ...DEFAULT_UI_CALIBRATION.statButton, ...parsed.statButton },
       leaderButton: { ...DEFAULT_UI_CALIBRATION.leaderButton, ...parsed.leaderButton },
       loginButton: { ...DEFAULT_UI_CALIBRATION.loginButton, ...parsed.loginButton },
@@ -1211,6 +1252,7 @@ export default function Home() {
   const [shipCalibrationOrientation, setShipCalibrationOrientation] = useState<
     "horizontal" | "vertical"
   >("horizontal");
+  const [shipCursorDragState, setShipCursorDragState] = useState<ShipCursorDragState | null>(null);
 
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [roomView, setRoomView] = useState<RoomViewPayload | null>(null);
@@ -1740,7 +1782,7 @@ export default function Home() {
     : activeUiCalibration.shipCursorVertical;
   const placementCursorLength = selectedPlacementLength ?? 1;
   const placementCursorLongSide = Math.max(
-    activeShipCursorCalibration.minLengthPx,
+    24,
     placementCursorLength * activeShipCursorCalibration.deckSizePx
   );
   const placementCursorWidth = selectedPlacementHorizontal
@@ -2298,7 +2340,16 @@ export default function Home() {
   }
 
   function updateCalibrationRect(
-    key: "onlineButton" | "offlineButton" | "statButton" | "leaderButton" | "loginButton",
+    key:
+      | "onlineButton"
+      | "offlineButton"
+      | "babyButton"
+      | "manButton"
+      | "nightmareButton"
+      | "soundButton"
+      | "statButton"
+      | "leaderButton"
+      | "loginButton",
     patch: Partial<CalibrationRect>
   ): void {
     setUiCalibrationDraft((prev) =>
@@ -2328,6 +2379,76 @@ export default function Home() {
       })
     );
   }
+
+  function beginShipCursorDrag(handle: ShipCursorHandle, event: ReactPointerEvent): void {
+    if (!isUiCalibrationMode) return;
+    if (!isPlacementInteractionActive) return;
+    if (selectedPlacementLength === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setShipCursorDragState({
+      handle,
+      orientation: selectedPlacementHorizontal ? "horizontal" : "vertical",
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startConfig: { ...activeShipCursorCalibration },
+      startWidth: placementCursorWidth,
+      startHeight: placementCursorHeight,
+      length: selectedPlacementLength,
+    });
+  }
+
+  useEffect(() => {
+    if (!shipCursorDragState || !isUiCalibrationMode) return;
+    const drag = shipCursorDragState;
+    const orientation = drag.orientation;
+
+    const onPointerMove = (event: PointerEvent): void => {
+      const dx = event.clientX - drag.startClientX;
+      const dy = event.clientY - drag.startClientY;
+      const patch: Partial<ShipCursorCalibration> = {};
+
+      if (drag.handle === "move") {
+        patch.offsetXPx = drag.startConfig.offsetXPx + dx;
+        patch.offsetYPx = drag.startConfig.offsetYPx + dy;
+      }
+
+      if (drag.handle === "rotate") {
+        patch.rotationDeg = drag.startConfig.rotationDeg + dx * 0.45;
+      }
+
+      if (drag.handle === "resize-width" || drag.handle === "resize-both") {
+        const nextWidth = Math.max(16, drag.startWidth + dx);
+        if (orientation === "horizontal") {
+          patch.deckSizePx = nextWidth / Math.max(1, drag.length);
+        } else {
+          patch.thicknessPx = nextWidth;
+        }
+      }
+
+      if (drag.handle === "resize-height" || drag.handle === "resize-both") {
+        const nextHeight = Math.max(16, drag.startHeight + dy);
+        if (orientation === "horizontal") {
+          patch.thicknessPx = nextHeight;
+        } else {
+          patch.deckSizePx = nextHeight / Math.max(1, drag.length);
+        }
+      }
+
+      updateShipCursorCalibration(orientation, patch);
+    };
+
+    const onPointerUp = (): void => {
+      setShipCursorDragState(null);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [isUiCalibrationMode, shipCursorDragState]);
 
   const shipCalibrationTarget =
     shipCalibrationOrientation === "horizontal"
@@ -2360,6 +2481,17 @@ export default function Home() {
               if (!isPlacementInteractionActive) return;
               event.preventDefault();
               togglePlacementOrientation();
+            }}
+            onWheel={(event) => {
+              if (!isUiCalibrationMode || !isPlacementInteractionActive) return;
+              if (!event.shiftKey) return;
+              event.preventDefault();
+              updateShipCursorCalibration(
+                selectedPlacementHorizontal ? "horizontal" : "vertical",
+                {
+                  rotationDeg: activeShipCursorCalibration.rotationDeg + event.deltaY * 0.15,
+                }
+              );
             }}
           >
             <CarpetBoard
@@ -2472,18 +2604,47 @@ export default function Home() {
             {isPlacementInteractionActive &&
               selectedPlacementLength !== null &&
               placementCursorPos && (
-                <img
-                  src={SHIP_ICON_BY_LENGTH[selectedPlacementLength]}
-                  alt=""
-                  className="pointer-events-none absolute z-[46] opacity-75"
+                <div
+                  className="pointer-events-none absolute z-[46]"
                   style={{
                     width: `${placementCursorWidth}px`,
                     height: `${placementCursorHeight}px`,
                     left: `${placementCursorPos.x + activeShipCursorCalibration.offsetXPx}px`,
                     top: `${placementCursorPos.y + activeShipCursorCalibration.offsetYPx}px`,
                     transform: `translate(-${activeShipCursorCalibration.anchorXPct}%, -${activeShipCursorCalibration.anchorYPct}%) rotate(${activeShipCursorCalibration.rotationDeg}deg)`,
+                    transformOrigin: "center center",
                   }}
-                />
+                >
+                  <img
+                    src={SHIP_ICON_BY_LENGTH[selectedPlacementLength]}
+                    alt=""
+                    className="pointer-events-none h-full w-full opacity-75"
+                  />
+                  {isUiCalibrationMode && (
+                    <>
+                      <div
+                        className="pointer-events-auto absolute -left-2 -top-2 h-4 w-4 cursor-nwse-resize rounded-full border border-cyan-100 bg-cyan-500/90"
+                        onPointerDown={(event) => beginShipCursorDrag("resize-both", event)}
+                      />
+                      <div
+                        className="pointer-events-auto absolute -right-2 top-1/2 h-4 w-4 -translate-y-1/2 cursor-ew-resize rounded-full border border-cyan-100 bg-cyan-500/90"
+                        onPointerDown={(event) => beginShipCursorDrag("resize-width", event)}
+                      />
+                      <div
+                        className="pointer-events-auto absolute left-1/2 -bottom-2 h-4 w-4 -translate-x-1/2 cursor-ns-resize rounded-full border border-cyan-100 bg-cyan-500/90"
+                        onPointerDown={(event) => beginShipCursorDrag("resize-height", event)}
+                      />
+                      <div
+                        className="pointer-events-auto absolute left-1/2 -top-8 h-4 w-4 -translate-x-1/2 cursor-grab rounded-full border border-amber-200 bg-amber-500/90 active:cursor-grabbing"
+                        onPointerDown={(event) => beginShipCursorDrag("rotate", event)}
+                      />
+                      <div
+                        className="pointer-events-auto absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border border-emerald-200 bg-emerald-500/90"
+                        onPointerDown={(event) => beginShipCursorDrag("move", event)}
+                      />
+                    </>
+                  )}
+                </div>
               )}
 
             <button
@@ -2607,8 +2768,16 @@ export default function Home() {
                       <>
                         <button
                           type="button"
-                          onClick={() => handleLevelChoice("easy")}
-                          className={`absolute left-[7.6%] top-[37.9%] h-[15.6%] w-[84.8%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
+                          onClick={() => {
+                            if (isUiCalibrationMode) return;
+                            handleLevelChoice("easy");
+                          }}
+                          className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
+                            isUiCalibrationMode
+                              ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
+                              : ""
+                          }`}
+                          style={rectStyle(activeUiCalibration.babyButton)}
                           aria-label="Baby level"
                         >
                           <Image
@@ -2621,8 +2790,16 @@ export default function Home() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleLevelChoice("medium")}
-                          className={`absolute left-[7.6%] top-[56.4%] h-[15.6%] w-[84.8%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
+                          onClick={() => {
+                            if (isUiCalibrationMode) return;
+                            handleLevelChoice("medium");
+                          }}
+                          className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
+                            isUiCalibrationMode
+                              ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
+                              : ""
+                          }`}
+                          style={rectStyle(activeUiCalibration.manButton)}
                           aria-label="Man level"
                         >
                           <Image
@@ -2635,8 +2812,16 @@ export default function Home() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleLevelChoice("hard")}
-                          className={`absolute left-[7.6%] top-[74.8%] h-[15.6%] w-[84.8%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
+                          onClick={() => {
+                            if (isUiCalibrationMode) return;
+                            handleLevelChoice("hard");
+                          }}
+                          className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
+                            isUiCalibrationMode
+                              ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
+                              : ""
+                          }`}
+                          style={rectStyle(activeUiCalibration.nightmareButton)}
                           aria-label="Nightmare level"
                         >
                           <Image
@@ -2677,8 +2862,16 @@ export default function Home() {
                     <Image src={UI_MENU_PANEL_URL} alt="Menu panel" width={1058} height={1322} />
                     <button
                       type="button"
-                      onClick={handleToggleSound}
-                      className={`absolute left-[11.1%] top-[20.4%] h-[13.2%] w-[77.8%] ${MODAL_BUTTON_MOTION_CLASS}`}
+                      onClick={() => {
+                        if (isUiCalibrationMode) return;
+                        handleToggleSound();
+                      }}
+                      className={`absolute ${MODAL_BUTTON_MOTION_CLASS} ${
+                        isUiCalibrationMode
+                          ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
+                          : ""
+                      }`}
+                      style={rectStyle(activeUiCalibration.soundButton)}
                       aria-label="Toggle music"
                     >
                       <Image
@@ -2817,6 +3010,10 @@ export default function Home() {
                 {([
                   ["onlineButton", "Online button"],
                   ["offlineButton", "Offline button"],
+                  ["babyButton", "Baby button"],
+                  ["manButton", "Man button"],
+                  ["nightmareButton", "Nightmare button"],
+                  ["soundButton", "Sound button"],
                   ["statButton", "Stat button"],
                   ["leaderButton", "Leader button"],
                   ["loginButton", "Login button"],
