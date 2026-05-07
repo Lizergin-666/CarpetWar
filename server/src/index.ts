@@ -11,7 +11,35 @@ const app = express();
 const httpServer = createServer(app);
 
 const port = Number(process.env.PORT ?? 4000);
-const clientOrigin = process.env.CLIENT_ORIGIN ?? "http://localhost:3000";
+const rawClientOrigins = process.env.CLIENT_ORIGIN ?? "http://localhost:3000";
+
+function normalizeOrigin(origin: string): string {
+  const trimmed = origin.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("localhost:") || trimmed.startsWith("127.0.0.1:")) {
+    return `http://${trimmed}`;
+  }
+  return `https://${trimmed}`;
+}
+
+const allowedOrigins = Array.from(
+  new Set(
+    [
+      ...rawClientOrigins.split(",").map(normalizeOrigin).filter(Boolean),
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "http://localhost:3001",
+      "http://127.0.0.1:3001",
+    ].map(normalizeOrigin)
+  )
+);
+
+function isOriginAllowed(origin?: string): boolean {
+  if (!origin) return true;
+  const normalized = normalizeOrigin(origin);
+  return allowedOrigins.includes(normalized);
+}
 
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
@@ -19,7 +47,7 @@ const ROOM_TURN_SECONDS = 20;
 const BLITZ_MATCH_SECONDS = 180;
 const ROOM_TIMEOUT_SWEEP_MS = 500;
 const WATER = -1;
-const ROOM_FLEET = [5, 4, 3, 2, 1] as const;
+const ROOM_FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const STATS_FILE_PATH = path.resolve(process.cwd(), "data", "pvp-stats.json");
 const ROOM_FLEET_SORTED_ASC = [...ROOM_FLEET].sort((a, b) => a - b);
@@ -172,7 +200,13 @@ interface StatsFilePayload {
 
 app.use(
   cors({
-    origin: clientOrigin,
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`CORS: origin not allowed (${origin ?? "unknown"})`));
+    },
     credentials: true,
   })
 );
@@ -187,7 +221,9 @@ app.get("/health", (_req, res) => {
 
 const io = new Server(httpServer, {
   cors: {
-    origin: clientOrigin,
+    origin: (origin, callback) => {
+      callback(null, isOriginAllowed(origin));
+    },
     credentials: true,
   },
   transports: ["polling", "websocket"],
