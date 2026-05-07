@@ -53,13 +53,22 @@ const MENU_BUTTON_WIDTH_PCT = 16;
 const MENU_PANEL_WIDTH_PCT = 19.6;
 const MENU_PANEL_CENTER_X_PCT =
   100 - MENU_BUTTON_RIGHT_PCT - MENU_BUTTON_WIDTH_PCT / 2;
+const ONLINE_PLACEMENT_SECONDS = 20;
+const ONLINE_PLACEMENT_FLEET = [5, 4, 3, 2, 1] as const;
+const SHIP_ICON_BY_LENGTH: Record<number, string> = {
+  1: "/ui/ships/ship-1.png",
+  2: "/ui/ships/ship-2.png",
+  3: "/ui/ships/ship-3.png",
+  4: "/ui/ships/ship-4.png",
+  5: "/ui/ships/ship-5.png",
+};
 
 type Turn = "player" | "bot" | "finished";
 type Mark = "unknown" | "miss" | "hit";
 type BotDifficulty = "easy" | "medium" | "hard";
 type StartPanel = "online" | "level";
 type GameMode = "solo" | "online";
-type RoomPhase = "lobby" | "playing" | "finished";
+type RoomPhase = "lobby" | "placement" | "playing" | "finished";
 type Role = "host" | "guest";
 type RoomMode = "classic" | "blitz3m";
 
@@ -103,6 +112,7 @@ interface RoomViewPayload {
   opponentConnected: boolean;
   yourTurn: boolean;
   shotsLeft: number;
+  placementSecondsLeft: number;
   turnSecondsLeft: number;
   matchSecondsLeft: number;
   round: number;
@@ -113,10 +123,27 @@ interface RoomViewPayload {
   playerRadar: Mark[][];
   defenseRadar: Mark[][];
   playerShipGrid: number[][];
+  yourPlacementReady: boolean;
+  opponentPlacementReady: boolean;
   yourDecksLeft: number;
   enemyDecksLeft: number;
   status: string;
   log: string[];
+}
+
+interface PlacementShipPayload {
+  length: number;
+  row: number;
+  col: number;
+  horizontal: boolean;
+}
+
+interface OnlinePlacementShipDraft {
+  length: number;
+  row: number;
+  col: number;
+  horizontal: boolean;
+  placed: boolean;
 }
 
 interface RoomActionAck {
@@ -299,6 +326,79 @@ function createGrid<T>(value: T): T[][] {
 
 function cloneGrid<T>(grid: T[][]): T[][] {
   return grid.map((row) => row.slice());
+}
+
+function createOnlinePlacementDraft(): OnlinePlacementShipDraft[] {
+  return ONLINE_PLACEMENT_FLEET.map((length) => ({
+    length,
+    row: 0,
+    col: 0,
+    horizontal: true,
+    placed: false,
+  }));
+}
+
+function isInsideBoard(row: number, col: number): boolean {
+  return row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE;
+}
+
+function canPlaceDraftShip(
+  grid: number[][],
+  row: number,
+  col: number,
+  length: number,
+  horizontal: boolean
+): boolean {
+  for (let i = 0; i < length; i += 1) {
+    const r = horizontal ? row : row + i;
+    const c = horizontal ? col + i : col;
+    if (!isInsideBoard(r, c)) return false;
+    if (grid[r][c] !== WATER) return false;
+    for (let rr = r - 1; rr <= r + 1; rr += 1) {
+      for (let cc = c - 1; cc <= c + 1; cc += 1) {
+        if (isInsideBoard(rr, cc) && grid[rr][cc] !== WATER) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+function buildPlacementGrid(
+  draftShips: OnlinePlacementShipDraft[],
+  ignoreLength?: number
+): number[][] {
+  const grid = createGrid<number>(WATER);
+  let shipId = 0;
+  for (const ship of draftShips) {
+    if (!ship.placed) continue;
+    if (ignoreLength !== undefined && ship.length === ignoreLength) continue;
+    for (let i = 0; i < ship.length; i += 1) {
+      const r = ship.horizontal ? ship.row : ship.row + i;
+      const c = ship.horizontal ? ship.col + i : ship.col;
+      if (!isInsideBoard(r, c)) continue;
+      grid[r][c] = shipId;
+    }
+    shipId += 1;
+  }
+  return grid;
+}
+
+function getShipCells(
+  row: number,
+  col: number,
+  length: number,
+  horizontal: boolean
+): Array<{ row: number; col: number }> {
+  return Array.from({ length }, (_, i) => ({
+    row: horizontal ? row : row + i,
+    col: horizontal ? col + i : col,
+  }));
+}
+
+function allDraftShipsPlaced(draftShips: OnlinePlacementShipDraft[]): boolean {
+  return draftShips.every((ship) => ship.placed);
 }
 
 function countRadarMarks(radar: Mark[][]): { shots: number; hits: number } {
@@ -896,6 +996,19 @@ export default function Home() {
   const [roomView, setRoomView] = useState<RoomViewPayload | null>(null);
   const [joinCode, setJoinCode] = useState<string>("");
   const [roomMode, setRoomMode] = useState<RoomMode>("classic");
+  const [placementDraft, setPlacementDraft] = useState<OnlinePlacementShipDraft[]>(
+    () => createOnlinePlacementDraft()
+  );
+  const [selectedPlacementLength, setSelectedPlacementLength] = useState<number | null>(
+    ONLINE_PLACEMENT_FLEET[0]
+  );
+  const [placementHoverCell, setPlacementHoverCell] = useState<{
+    row: number;
+    col: number;
+  } | null>(null);
+  const [placementCursorPos, setPlacementCursorPos] = useState<{ x: number; y: number } | null>(
+    null
+  );
   const [onlineNotice, setOnlineNotice] = useState<string>(
     "Login with Google, then create or join a room."
   );
@@ -915,6 +1028,7 @@ export default function Home() {
   const radarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const onlineRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
+  const lastPlacementSignatureRef = useRef<string>("");
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
@@ -1385,7 +1499,56 @@ export default function Home() {
   const showDefenseLayer = game.turn === "bot" || (game.turn === "finished" && game.winner === "bot");
   const onlinePlayerRadar = roomView?.playerRadar ?? createGrid<Mark>("unknown");
   const onlineDefenseRadar = roomView?.defenseRadar ?? createGrid<Mark>("unknown");
-  const onlineShipGrid = roomView?.playerShipGrid ?? createGrid<number>(WATER);
+  const isOnlinePlacementPhase = gameMode === "online" && roomView?.phase === "placement";
+  const placedDraftGrid = useMemo(() => buildPlacementGrid(placementDraft), [placementDraft]);
+  const selectedPlacementShip =
+    selectedPlacementLength === null
+      ? null
+      : placementDraft.find((ship) => ship.length === selectedPlacementLength) ?? null;
+  const selectedPlacementHorizontal = selectedPlacementShip?.horizontal ?? true;
+  const placementPreview = useMemo(() => {
+    if (!isOnlinePlacementPhase) return null;
+    if (!selectedPlacementShip) return null;
+    if (!placementHoverCell) return null;
+    if (roomView?.yourPlacementReady) return null;
+    const occupiedWithoutSelected = buildPlacementGrid(placementDraft, selectedPlacementShip.length);
+    const valid = canPlaceDraftShip(
+      occupiedWithoutSelected,
+      placementHoverCell.row,
+      placementHoverCell.col,
+      selectedPlacementShip.length,
+      selectedPlacementShip.horizontal
+    );
+    const cells = getShipCells(
+      placementHoverCell.row,
+      placementHoverCell.col,
+      selectedPlacementShip.length,
+      selectedPlacementShip.horizontal
+    );
+    return { valid, cells };
+  }, [
+    isOnlinePlacementPhase,
+    selectedPlacementShip,
+    placementHoverCell,
+    roomView?.yourPlacementReady,
+    placementDraft,
+  ]);
+  const placementHighlights = useMemo(() => {
+    if (!placementPreview) return [];
+    return placementPreview.cells
+      .filter((cell) => isInsideBoard(cell.row, cell.col))
+      .map((cell) => ({
+        row: cell.row,
+        col: cell.col,
+        valid: placementPreview.valid,
+      }));
+  }, [placementPreview]);
+  const onlineShipGrid =
+    roomView?.phase === "placement"
+      ? roomView.yourPlacementReady
+        ? roomView.playerShipGrid
+        : placedDraftGrid
+      : roomView?.playerShipGrid ?? createGrid<number>(WATER);
   const onlineShipHits = useMemo(
     () => deriveShipHits(onlineShipGrid, onlineDefenseRadar, WATER),
     [onlineDefenseRadar, onlineShipGrid]
@@ -1393,7 +1556,11 @@ export default function Home() {
   const hiddenEnemyShipGrid = useMemo(() => createGrid<number>(WATER), []);
   const hiddenEnemyShipHits = useMemo(() => [] as number[], []);
   const onlineShowDefenseLayer =
-    roomView?.phase === "playing" ? !roomView.yourTurn : roomView !== null;
+    roomView?.phase === "playing"
+      ? !roomView.yourTurn
+      : roomView?.phase === "placement"
+      ? true
+      : roomView !== null;
   const onlineCanShoot =
     gameMode === "online" &&
     socketConnected &&
@@ -1408,6 +1575,12 @@ export default function Home() {
     roomView?.phase === "lobby" &&
     roomView.youRole === "host" &&
     socketConnected;
+  const canLockPlacement =
+    gameMode === "online" &&
+    socketConnected &&
+    roomView?.phase === "placement" &&
+    !roomView.yourPlacementReady &&
+    allDraftShipsPlaced(placementDraft);
   const avgPlayerAccuracy =
     totalGames > 0
       ? Math.round(
@@ -1449,12 +1622,118 @@ export default function Home() {
     resetHitEffects();
   }, [game.enemyShipHits, game.id, game.playerRadar, resetHitEffects, gameMode]);
 
+  useEffect(() => {
+    if (gameMode !== "online") return;
+    if (roomView?.phase !== "placement") {
+      setPlacementHoverCell(null);
+      setPlacementCursorPos(null);
+      return;
+    }
+    if (!roomView.yourPlacementReady) {
+      setPlacementDraft(createOnlinePlacementDraft());
+      setSelectedPlacementLength(ONLINE_PLACEMENT_FLEET[0]);
+      setPlacementHoverCell(null);
+      setPlacementCursorPos(null);
+      lastPlacementSignatureRef.current = "";
+    }
+  }, [gameMode, roomView?.phase, roomView?.roomCode, roomView?.yourPlacementReady]);
+
   function resetGame(nextDifficulty?: BotDifficulty): void {
     const difficulty = nextDifficulty ?? botDifficulty;
     setGame(createGameState(difficulty));
     setCoachReport(null);
     setHitEffects([]);
     setGameMode("solo");
+  }
+
+  function togglePlacementOrientation(): void {
+    if (!isOnlinePlacementPhase) return;
+    if (roomView?.yourPlacementReady) return;
+    if (selectedPlacementLength === null) return;
+    setPlacementDraft((prev) =>
+      prev.map((ship) =>
+        ship.length === selectedPlacementLength
+          ? { ...ship, horizontal: !ship.horizontal }
+          : ship
+      )
+    );
+  }
+
+  function handlePlacementHover(row: number, col: number): void {
+    if (!isOnlinePlacementPhase) return;
+    setPlacementHoverCell({ row, col });
+  }
+
+  function handlePlacementLeave(): void {
+    setPlacementHoverCell(null);
+  }
+
+  function submitPlacementIfReady(nextDraft: OnlinePlacementShipDraft[]): void {
+    if (!roomView || roomView.phase !== "placement") return;
+    if (roomView.yourPlacementReady) return;
+    if (!allDraftShipsPlaced(nextDraft)) return;
+
+    const ships: PlacementShipPayload[] = nextDraft.map((ship) => ({
+      length: ship.length,
+      row: ship.row,
+      col: ship.col,
+      horizontal: ship.horizontal,
+    }));
+
+    const signature = JSON.stringify(
+      ships
+        .slice()
+        .sort((a, b) => a.length - b.length)
+        .map((ship) => `${ship.length}:${ship.row}:${ship.col}:${ship.horizontal ? "H" : "V"}`)
+    );
+    if (lastPlacementSignatureRef.current === signature) return;
+    lastPlacementSignatureRef.current = signature;
+
+    socketRef.current?.emit(
+      "room:placement:set",
+      { ships },
+      (response: RoomActionAck): void => {
+        if (!response.ok) {
+          setOnlineNotice(response.error ?? "Failed to lock placement.");
+          lastPlacementSignatureRef.current = "";
+          return;
+        }
+        setOnlineNotice("Fleet locked. Waiting for opponent.");
+      }
+    );
+  }
+
+  function handlePlacementCellClick(row: number, col: number): void {
+    if (!isOnlinePlacementPhase) return;
+    if (!roomView || roomView.phase !== "placement") return;
+    if (roomView.yourPlacementReady) return;
+    if (selectedPlacementLength === null) return;
+    const selected = placementDraft.find((ship) => ship.length === selectedPlacementLength);
+    if (!selected) return;
+
+    const occupiedWithoutSelected = buildPlacementGrid(placementDraft, selected.length);
+    const valid = canPlaceDraftShip(
+      occupiedWithoutSelected,
+      row,
+      col,
+      selected.length,
+      selected.horizontal
+    );
+    if (!valid) return;
+
+    setPlacementDraft((prev) => {
+      const next = prev.map((ship) =>
+        ship.length === selected.length
+          ? { ...ship, row, col, placed: true }
+          : ship
+      );
+      submitPlacementIfReady(next);
+      const unplaced = next.find((ship) => !ship.placed);
+      if (unplaced) {
+        setSelectedPlacementLength(unplaced.length);
+      }
+      return next;
+    });
   }
 
   function handleOnlineShot(row: number, col: number): void {
@@ -1474,6 +1753,10 @@ export default function Home() {
 
   function handleCellClick(row: number, col: number): void {
     if (gameMode === "online") {
+      if (roomView?.phase === "placement") {
+        handlePlacementCellClick(row, col);
+        return;
+      }
       handleOnlineShot(row, col);
       return;
     }
@@ -1631,6 +1914,16 @@ export default function Home() {
     });
   }
 
+  function lockPlacementNow(): void {
+    if (!roomView || roomView.phase !== "placement") return;
+    if (roomView.yourPlacementReady) return;
+    if (!allDraftShipsPlaced(placementDraft)) {
+      setOnlineNotice("Place all ships first.");
+      return;
+    }
+    submitPlacementIfReady(placementDraft);
+  }
+
   function leaveOnlineRoom(): void {
     socketRef.current?.emit("room:leave");
     setRoomView(null);
@@ -1698,6 +1991,28 @@ export default function Home() {
           <div
             className="relative overflow-hidden"
             style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
+            onMouseMove={(event) => {
+              if (!isOnlinePlacementPhase) return;
+              if (roomView?.yourPlacementReady) return;
+              if (selectedPlacementLength === null) return;
+              const rect = event.currentTarget.getBoundingClientRect();
+              setPlacementCursorPos({
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top,
+              });
+            }}
+            onMouseLeave={() => {
+              setPlacementCursorPos(null);
+              if (isOnlinePlacementPhase) {
+                setPlacementHoverCell(null);
+              }
+            }}
+            onContextMenu={(event) => {
+              if (!isOnlinePlacementPhase) return;
+              if (roomView?.yourPlacementReady) return;
+              event.preventDefault();
+              togglePlacementOrientation();
+            }}
           >
             <CarpetBoard
               attackRadar={gameMode === "online" ? onlinePlayerRadar : game.playerRadar}
@@ -1725,6 +2040,11 @@ export default function Home() {
               containerClassName="mx-auto w-full max-w-none"
               enableHandStrike={false}
               calibrationStorageKey="sea-war.carpet-board-boundary.v3"
+              placementMode={Boolean(isOnlinePlacementPhase)}
+              placementHighlights={placementHighlights}
+              onPlacementCellHover={handlePlacementHover}
+              onPlacementLeave={handlePlacementLeave}
+              onPlacementRotate={togglePlacementOrientation}
             />
 
             <Image
@@ -1734,6 +2054,78 @@ export default function Home() {
               height={314}
               className="pointer-events-none absolute left-[1.5%] top-[1.8%] w-[22%] max-w-[320px] select-none"
             />
+
+            {isOnlinePlacementPhase && (
+              <div
+                className="absolute z-40 flex w-[12.4%] min-w-[120px] max-w-[200px] flex-col gap-1.5"
+                style={{
+                  left: "1.6%",
+                  top: "calc(1.8% + min(22vw, 320px) * 0.56 + 20px)",
+                }}
+              >
+                {placementDraft.map((ship) => {
+                  const selected = selectedPlacementLength === ship.length;
+                  return (
+                    <button
+                      key={`placement-ship-${ship.length}`}
+                      type="button"
+                      disabled={Boolean(roomView?.yourPlacementReady)}
+                      onClick={() => setSelectedPlacementLength(ship.length)}
+                      className={`relative aspect-[4/1.2] w-full transition ${
+                        selected ? "scale-[1.04]" : "scale-100"
+                      } ${ship.placed ? "opacity-100" : "opacity-85"} ${
+                        roomView?.yourPlacementReady
+                          ? "cursor-default"
+                          : "cursor-pointer hover:scale-[1.06]"
+                      }`}
+                      title={`Ship ${ship.length} cells`}
+                    >
+                      <Image
+                        src={SHIP_ICON_BY_LENGTH[ship.length]}
+                        alt={`Ship ${ship.length}`}
+                        fill
+                        sizes="170px"
+                        className="object-contain"
+                      />
+                      {ship.placed && (
+                        <span className="pointer-events-none absolute -right-1 -top-1 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[10px] font-semibold text-[#0c2312]">
+                          OK
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                <div className="mt-1 rounded-md border border-[#5f4a2d] bg-black/45 px-2 py-1 text-[11px] text-[#eddcb8]">
+                  <div>Placement: {roomView?.placementSecondsLeft ?? ONLINE_PLACEMENT_SECONDS}s</div>
+                  <div>
+                    You: {roomView?.yourPlacementReady ? "ready" : "placing"} | Opponent:{" "}
+                    {roomView?.opponentPlacementReady ? "ready" : "placing"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isOnlinePlacementPhase &&
+              !roomView?.yourPlacementReady &&
+              selectedPlacementLength !== null &&
+              placementCursorPos && (
+                <img
+                  src={SHIP_ICON_BY_LENGTH[selectedPlacementLength]}
+                  alt=""
+                  className="pointer-events-none absolute z-[46] opacity-75"
+                  style={{
+                    width: selectedPlacementHorizontal
+                      ? `${Math.max(70, selectedPlacementLength * 44)}px`
+                      : "42px",
+                    height: selectedPlacementHorizontal
+                      ? "42px"
+                      : `${Math.max(70, selectedPlacementLength * 44)}px`,
+                    left: `${placementCursorPos.x}px`,
+                    top: `${placementCursorPos.y}px`,
+                    transform: "translate(-18%, -42%)",
+                  }}
+                />
+              )}
 
             <button
               type="button"
@@ -2235,6 +2627,14 @@ export default function Home() {
                 >
                   Leave room
                 </button>
+                <button
+                  type="button"
+                  onClick={lockPlacementNow}
+                  disabled={!canLockPlacement}
+                  className="rounded-lg border border-amber-500/70 bg-amber-500/20 px-3 py-2 text-sm text-amber-100 transition hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Lock fleet
+                </button>
               </div>
 
               <div className="mb-4 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
@@ -2296,6 +2696,17 @@ export default function Home() {
                   Start match
                 </button>
               </div>
+
+              {roomView?.phase === "placement" && (
+                <div className="mb-4 rounded-lg border border-[#6c5130] bg-black/30 p-3 text-sm text-[#dcc8a3]">
+                  Placement time left: {roomView.placementSecondsLeft}s | You:{" "}
+                  {roomView.yourPlacementReady ? "ready" : "placing"} | Opponent:{" "}
+                  {roomView.opponentPlacementReady ? "ready" : "placing"}
+                  <div className="mt-1 text-xs text-[#bca57e]">
+                    Click ship icon, move on board, right click to rotate, left click to place.
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-lg border border-[#6c5130] bg-black/30 p-3 text-sm text-[#dcc8a3]">
                 {onlineNotice}

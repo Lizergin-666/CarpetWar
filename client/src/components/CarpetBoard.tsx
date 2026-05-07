@@ -133,6 +133,12 @@ interface HitEffect {
   startedAtMs: number;
 }
 
+interface PlacementHighlightCell {
+  row: number;
+  col: number;
+  valid: boolean;
+}
+
 interface ShotSequence {
   row: number;
   col: number;
@@ -267,6 +273,11 @@ interface CarpetBoardProps {
   containerClassName?: string;
   enableHandStrike?: boolean;
   showCalibrationControls?: boolean;
+  placementMode?: boolean;
+  placementHighlights?: PlacementHighlightCell[];
+  onPlacementCellHover?: (row: number, col: number) => void;
+  onPlacementLeave?: () => void;
+  onPlacementRotate?: () => void;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -712,6 +723,11 @@ export function CarpetBoard({
   containerClassName = "mx-auto w-full max-w-[1240px]",
   enableHandStrike = true,
   showCalibrationControls = false,
+  placementMode = false,
+  placementHighlights = [],
+  onPlacementCellHover,
+  onPlacementLeave,
+  onPlacementRotate,
 }: CarpetBoardProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const shotTimerIdsRef = useRef<number[]>([]);
@@ -739,6 +755,13 @@ export function CarpetBoard({
   const canShowCalibration = showSetupUi || showCalibrationControls;
   const isSpriteEditing = selectedSpriteId !== null && draftSpriteTransform !== null;
   const isShotRunning = shotSequence !== null;
+  const placementHighlightByCell = useMemo(() => {
+    const map = new Map<string, PlacementHighlightCell>();
+    for (const item of placementHighlights) {
+      map.set(cellKey(item.row, item.col), item);
+    }
+    return map;
+  }, [placementHighlights]);
 
   useEffect(() => {
     return () => {
@@ -987,16 +1010,18 @@ export function CarpetBoard({
         const attackMark = attackRadar[row]?.[col] ?? "unknown";
         const defenseMark = defenseRadar[row]?.[col] ?? "unknown";
         const hasShip = shipGrid[row]?.[col] !== waterValue;
-        const canClick =
-          canShoot &&
-          attackMark === "unknown" &&
-          !isCalibrating &&
-          !isSpriteEditing &&
-          !isShotRunning;
+        const canClick = placementMode
+          ? !isCalibrating && !isSpriteEditing && !isShotRunning
+          : canShoot &&
+            attackMark === "unknown" &&
+            !isCalibrating &&
+            !isSpriteEditing &&
+            !isShotRunning;
 
         const key = cellKey(row, col);
         const hasAttackOverlay = attackOverlays.coveredCellKeys.has(key);
         const hasDefenseOverlay = defenseOverlays.coveredCellKeys.has(key);
+        const placementHighlight = placementHighlightByCell.get(key);
 
         let layerFill = "rgba(15, 23, 42, 0)";
         if (defenseMark === "hit") {
@@ -1007,6 +1032,11 @@ export function CarpetBoard({
           layerFill = hasDefenseOverlay ? "rgba(8, 145, 178, 0.08)" : "rgba(8, 145, 178, 0.45)";
         } else if (canClick) {
           layerFill = "rgba(8, 145, 178, 0.10)";
+        }
+        if (placementMode && placementHighlight) {
+          layerFill = placementHighlight.valid
+            ? "rgba(34, 197, 94, 0.38)"
+            : "rgba(239, 68, 68, 0.45)";
         }
 
         return (
@@ -1023,11 +1053,24 @@ export function CarpetBoard({
               }
               onClick={() => {
                 if (!canClick) return;
+                if (placementMode) {
+                  onCellClick(row, col);
+                  return;
+                }
                 if (enableHandStrike) {
                   runShotSequence(row, col, center);
                 } else {
                   onCellClick(row, col);
                 }
+              }}
+              onPointerEnter={() => {
+                if (!placementMode) return;
+                onPlacementCellHover?.(row, col);
+              }}
+              onContextMenu={(event) => {
+                if (!placementMode) return;
+                event.preventDefault();
+                onPlacementRotate?.();
               }}
             />
 
@@ -1094,7 +1137,11 @@ export function CarpetBoard({
     isShotRunning,
     attackOverlays.coveredCellKeys,
     enableHandStrike,
+    placementMode,
+    placementHighlightByCell,
     onCellClick,
+    onPlacementCellHover,
+    onPlacementRotate,
     runShotSequence,
     shipGrid,
     showDefenseLayer,
@@ -1338,7 +1385,12 @@ export function CarpetBoard({
               onPointerMove={onSvgPointerMove}
               onPointerUp={stopAllDragging}
               onPointerCancel={stopAllDragging}
-              onPointerLeave={stopAllDragging}
+              onPointerLeave={() => {
+                stopAllDragging();
+                if (placementMode) {
+                  onPlacementLeave?.();
+                }
+              }}
               aria-hidden="true"
             >
               {shipOverlays.map((overlay) => {

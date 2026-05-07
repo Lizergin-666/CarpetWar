@@ -16,12 +16,14 @@ const clientOrigin = process.env.CLIENT_ORIGIN ?? "http://localhost:3000";
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
 const ROOM_TURN_SECONDS = 20;
+const ROOM_PLACEMENT_SECONDS = 20;
 const BLITZ_MATCH_SECONDS = 180;
 const ROOM_TIMEOUT_SWEEP_MS = 500;
 const WATER = -1;
-const FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
+const ROOM_FLEET = [5, 4, 3, 2, 1] as const;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const STATS_FILE_PATH = path.resolve(process.cwd(), "data", "pvp-stats.json");
+const ROOM_FLEET_SORTED_ASC = [...ROOM_FLEET].sort((a, b) => a - b);
 const STATS_PERSISTENCE_MODE = String(
   process.env.STATS_PERSISTENCE_MODE ?? "local"
 ).toLowerCase();
@@ -30,7 +32,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
 type OpponentId = string | null;
 type TurnMark = "unknown" | "miss" | "hit";
-type RoomPhase = "lobby" | "playing" | "finished";
+type RoomPhase = "lobby" | "placement" | "playing" | "finished";
 type RoomMode = "classic" | "blitz3m";
 type RoundOutcome = "win" | "loss" | "draw";
 type StatsPersistenceMode = "local" | "supabase" | "hybrid";
@@ -93,6 +95,20 @@ interface RoomPlayerState {
   hits: number;
 }
 
+interface PlacementShipInput {
+  length: number;
+  row: number;
+  col: number;
+  horizontal: boolean;
+}
+
+interface RoomPlacementState {
+  deadlineMs: number | null;
+  lastSecondBroadcast: number | null;
+  readySockets: Set<string>;
+  drafts: Map<string, Placement>;
+}
+
 interface RoomState {
   code: string;
   hostId: string;
@@ -110,6 +126,7 @@ interface RoomState {
   lastMatchSecondBroadcast: number | null;
   rematchRequestedBy: Set<string>;
   players: Map<string, RoomPlayerState>;
+  placement: RoomPlacementState;
   log: string[];
 }
 
@@ -123,6 +140,7 @@ interface RoomViewPayload {
   opponentConnected: boolean;
   yourTurn: boolean;
   shotsLeft: number;
+  placementSecondsLeft: number;
   turnSecondsLeft: number;
   matchSecondsLeft: number;
   round: number;
@@ -133,6 +151,8 @@ interface RoomViewPayload {
   playerRadar: TurnMark[][];
   defenseRadar: TurnMark[][];
   playerShipGrid: number[][];
+  yourPlacementReady: boolean;
+  opponentPlacementReady: boolean;
   yourDecksLeft: number;
   enemyDecksLeft: number;
   status: string;
@@ -475,6 +495,68 @@ function placeFleetRandomly(fleet: readonly number[]): Placement {
   throw new Error("Failed to place fleet in room state.");
 }
 
+function normalizePlacementShipInput(raw: PlacementShipInput): PlacementShipInput | null {
+  const length = Number(raw.length);
+  const row = Number(raw.row);
+  const col = Number(raw.col);
+  const horizontal = Boolean(raw.horizontal);
+  if (!Number.isInteger(length) || length < 1 || length > BOARD_SIZE) return null;
+  if (!Number.isInteger(row) || !Number.isInteger(col)) return null;
+  if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return null;
+  return { length, row, col, horizontal };
+}
+
+function buildPlacementFromShips(
+  ships: PlacementShipInput[]
+): { ok: true; placement: Placement } | { ok: false; error: string } {
+  if (!Array.isArray(ships) || ships.length !== ROOM_FLEET.length) {
+    return {
+      ok: false,
+      error: `Need exactly ${ROOM_FLEET.length} ships for placement.`,
+    };
+  }
+
+  const normalized: PlacementShipInput[] = [];
+  for (const ship of ships) {
+    const next = normalizePlacementShipInput(ship);
+    if (!next) {
+      return { ok: false, error: "Invalid ship placement payload." };
+    }
+    normalized.push(next);
+  }
+
+  const lengths = normalized.map((ship) => ship.length).sort((a, b) => a - b);
+  for (let i = 0; i < ROOM_FLEET_SORTED_ASC.length; i += 1) {
+    if (lengths[i] !== ROOM_FLEET_SORTED_ASC[i]) {
+      return {
+        ok: false,
+        error: `Fleet must contain lengths: ${ROOM_FLEET.join(", ")}.`,
+      };
+    }
+  }
+
+  const grid = createGrid<number>(WATER);
+  const shipLengths: number[] = [];
+  for (let shipId = 0; shipId < normalized.length; shipId += 1) {
+    const ship = normalized[shipId];
+    if (!canPlaceShip(grid, ship.row, ship.col, ship.length, ship.horizontal)) {
+      return {
+        ok: false,
+        error: `Ship length ${ship.length} has invalid position or intersects another ship.`,
+      };
+    }
+
+    for (let i = 0; i < ship.length; i += 1) {
+      const r = ship.horizontal ? ship.row : ship.row + i;
+      const c = ship.horizontal ? ship.col + i : ship.col;
+      grid[r][c] = shipId;
+    }
+    shipLengths.push(ship.length);
+  }
+
+  return { ok: true, placement: { shipGrid: grid, shipLengths } };
+}
+
 function isFleetDestroyed(shipHits: number[], shipLengths: number[]): boolean {
   return shipHits.every((hits, index) => hits >= shipLengths[index]);
 }
@@ -777,6 +859,25 @@ function applyRoomShot(
   return { ok: true, roomCode: room.code };
 }
 
+function resolvePlacementTimeout(room: RoomState): boolean {
+  if (room.phase !== "placement") return false;
+  if (!room.placement.deadlineMs) return false;
+  if (Date.now() < room.placement.deadlineMs) return false;
+
+  const hostReady = room.placement.readySockets.has(room.hostId);
+  const guestReady = room.guestId ? room.placement.readySockets.has(room.guestId) : false;
+  const autoNotes: string[] = [];
+  if (!hostReady) autoNotes.push("Host auto-placed.");
+  if (!guestReady) autoNotes.push("Guest auto-placed.");
+  const suffix = autoNotes.length > 0 ? ` ${autoNotes.join(" ")}` : "";
+
+  const result = finalizePlacementAndStart(
+    room,
+    `Placement timer ended. Match started. Host shoots first.${suffix}`
+  );
+  return result.ok;
+}
+
 function resolveTurnTimeout(room: RoomState): boolean {
   if (room.phase !== "playing") return false;
   if (!room.turnSocketId) return false;
@@ -993,17 +1094,32 @@ function getRole(room: RoomState, socketId: string): "host" | "guest" {
   return room.hostId === socketId ? "host" : "guest";
 }
 
-function createRoomPlayerState(socketId: string): RoomPlayerState {
-  const placement = placeFleetRandomly(FLEET);
+function createRoomPlayerState(socketId: string, placement: Placement): RoomPlayerState {
   return {
     socketId,
     shipGrid: placement.shipGrid,
     shipLengths: placement.shipLengths,
-    shipHits: Array.from({ length: FLEET.length }, () => 0),
+    shipHits: Array.from({ length: placement.shipLengths.length }, () => 0),
     radar: createGrid<TurnMark>("unknown"),
     shotsFired: 0,
     hits: 0,
   };
+}
+
+function createRoomPlacementState(): RoomPlacementState {
+  return {
+    deadlineMs: null,
+    lastSecondBroadcast: null,
+    readySockets: new Set<string>(),
+    drafts: new Map<string, Placement>(),
+  };
+}
+
+function clearRoomPlacement(room: RoomState): void {
+  room.placement.deadlineMs = null;
+  room.placement.lastSecondBroadcast = null;
+  room.placement.readySockets.clear();
+  room.placement.drafts.clear();
 }
 
 function trimLog(room: RoomState): void {
@@ -1017,6 +1133,7 @@ function resetRoomToLobby(room: RoomState, message: string): void {
   room.round = 1;
   room.winnerSocketId = null;
   room.isDraw = false;
+  clearRoomPlacement(room);
   room.turnDeadlineMs = null;
   room.matchDeadlineMs = null;
   room.lastTimerSecondBroadcast = null;
@@ -1026,14 +1143,20 @@ function resetRoomToLobby(room: RoomState, message: string): void {
   room.log = [message];
 }
 
-function startRoomMatch(room: RoomState, openerMessage: string): RoomActionAck {
+function finalizePlacementAndStart(room: RoomState, openerMessage: string): RoomActionAck {
   if (!room.guestId) {
     return { ok: false, error: "Need second player to start." };
   }
 
+  const hostPlacement =
+    room.placement.drafts.get(room.hostId) ?? placeFleetRandomly(ROOM_FLEET);
+  const guestPlacement =
+    room.placement.drafts.get(room.guestId) ?? placeFleetRandomly(ROOM_FLEET);
+
   room.players.clear();
-  room.players.set(room.hostId, createRoomPlayerState(room.hostId));
-  room.players.set(room.guestId, createRoomPlayerState(room.guestId));
+  room.players.set(room.hostId, createRoomPlayerState(room.hostId, hostPlacement));
+  room.players.set(room.guestId, createRoomPlayerState(room.guestId, guestPlacement));
+  clearRoomPlacement(room);
   room.phase = "playing";
   room.turnSocketId = room.hostId;
   room.shotsLeft = SHOTS_PER_TURN;
@@ -1043,6 +1166,31 @@ function startRoomMatch(room: RoomState, openerMessage: string): RoomActionAck {
   room.turnDeadlineMs = Date.now() + ROOM_TURN_SECONDS * 1000;
   room.matchDeadlineMs =
     room.mode === "blitz3m" ? Date.now() + BLITZ_MATCH_SECONDS * 1000 : null;
+  room.lastTimerSecondBroadcast = null;
+  room.lastMatchSecondBroadcast = null;
+  room.rematchRequestedBy.clear();
+  room.log = [openerMessage];
+  return { ok: true, roomCode: room.code };
+}
+
+function startRoomPlacementPhase(room: RoomState, openerMessage: string): RoomActionAck {
+  if (!room.guestId) {
+    return { ok: false, error: "Need second player to start." };
+  }
+
+  room.players.clear();
+  room.phase = "placement";
+  room.turnSocketId = null;
+  room.shotsLeft = SHOTS_PER_TURN;
+  room.round = 1;
+  room.winnerSocketId = null;
+  room.isDraw = false;
+  room.placement.deadlineMs = Date.now() + ROOM_PLACEMENT_SECONDS * 1000;
+  room.placement.lastSecondBroadcast = null;
+  room.placement.readySockets.clear();
+  room.placement.drafts.clear();
+  room.turnDeadlineMs = null;
+  room.matchDeadlineMs = null;
   room.lastTimerSecondBroadcast = null;
   room.lastMatchSecondBroadcast = null;
   room.rematchRequestedBy.clear();
@@ -1061,9 +1209,18 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     : false;
   const youState = room.players.get(socketId) ?? null;
   const opponentState = opponentId ? room.players.get(opponentId) ?? null : null;
+  const yourPlacementDraft = room.placement.drafts.get(socketId) ?? null;
+  const opponentPlacementReady = opponentId
+    ? room.placement.readySockets.has(opponentId)
+    : false;
+  const yourPlacementReady = room.placement.readySockets.has(socketId);
 
   const yourTurn =
     room.phase === "playing" && room.turnSocketId !== null && room.turnSocketId === socketId;
+  const placementSecondsLeft =
+    room.phase === "placement" && room.placement.deadlineMs
+      ? Math.max(0, Math.ceil((room.placement.deadlineMs - Date.now()) / 1000))
+      : 0;
   const turnSecondsLeft =
     yourTurn && room.turnDeadlineMs
       ? Math.max(0, Math.ceil((room.turnDeadlineMs - Date.now()) / 1000))
@@ -1087,6 +1244,10 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     status = room.guestId
       ? "Opponent connected. Host can start match."
       : "Waiting for opponent to join via room code.";
+  } else if (room.phase === "placement") {
+    const you = yourPlacementReady ? "ready" : "placing";
+    const opp = opponentPlacementReady ? "ready" : "placing";
+    status = `Placement phase: ${placementSecondsLeft}s left. You: ${you}, opponent: ${opp}.`;
   } else if (room.phase === "playing") {
     const blitzSuffix =
       room.mode === "blitz3m" ? ` | Match: ${matchSecondsLeft}s` : "";
@@ -1132,7 +1293,17 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
     defenseRadar: opponentState
       ? cloneGrid(opponentState.radar)
       : createGrid<TurnMark>("unknown"),
-    playerShipGrid: youState ? cloneGrid(youState.shipGrid) : createGrid<number>(WATER),
+    playerShipGrid:
+      room.phase === "placement"
+        ? yourPlacementDraft
+          ? cloneGrid(yourPlacementDraft.shipGrid)
+          : createGrid<number>(WATER)
+        : youState
+        ? cloneGrid(youState.shipGrid)
+        : createGrid<number>(WATER),
+    yourPlacementReady,
+    opponentPlacementReady,
+    placementSecondsLeft,
     yourDecksLeft: youState
       ? countRemainingDecks(youState.shipHits, youState.shipLengths)
       : 0,
@@ -1193,6 +1364,14 @@ bootstrapStatsPersistence();
 
 setInterval(() => {
   for (const room of rooms.values()) {
+    const placementChanged = resolvePlacementTimeout(room);
+    if (placementChanged) {
+      room.lastTimerSecondBroadcast = null;
+      room.lastMatchSecondBroadcast = null;
+      emitRoomState(room.code);
+      continue;
+    }
+
     const matchChanged = resolveMatchTimeout(room);
     if (matchChanged) {
       room.lastTimerSecondBroadcast = null;
@@ -1227,6 +1406,17 @@ setInterval(() => {
       );
       if (room.lastMatchSecondBroadcast !== matchSecondsLeft) {
         room.lastMatchSecondBroadcast = matchSecondsLeft;
+        emitRoomState(room.code);
+      }
+    }
+
+    if (room.phase === "placement" && room.placement.deadlineMs) {
+      const secondsLeft = Math.max(
+        0,
+        Math.ceil((room.placement.deadlineMs - Date.now()) / 1000)
+      );
+      if (room.placement.lastSecondBroadcast !== secondsLeft) {
+        room.placement.lastSecondBroadcast = secondsLeft;
         emitRoomState(room.code);
       }
     }
@@ -1308,6 +1498,7 @@ io.on("connection", (socket) => {
       lastMatchSecondBroadcast: null,
       rematchRequestedBy: new Set<string>(),
       players: new Map<string, RoomPlayerState>(),
+      placement: createRoomPlacementState(),
       log: ["Room created. Share code with your friend."],
     };
 
@@ -1426,11 +1617,11 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const result = startRoomMatch(
+    const result = startRoomPlacementPhase(
       room,
       room.mode === "blitz3m"
-        ? "Blitz 3m started. Host shoots first."
-        : "Match started. Host shoots first."
+        ? "Blitz 3m: placement started (20s)."
+        : "Placement started (20s)."
     );
     if (!result.ok) {
       callback?.(result);
@@ -1478,11 +1669,11 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const result = startRoomMatch(
+    const result = startRoomPlacementPhase(
       room,
       room.mode === "blitz3m"
-        ? "Blitz 3m rematch started. Host shoots first."
-        : "Rematch started. Host shoots first."
+        ? "Blitz 3m rematch: placement started (20s)."
+        : "Rematch: placement started (20s)."
     );
     if (!result.ok) {
       callback?.(result);
@@ -1492,6 +1683,67 @@ io.on("connection", (socket) => {
     emitRoomState(roomCode);
     callback?.(result);
   });
+
+  socket.on(
+    "room:placement:set",
+    (
+      payload: { ships?: PlacementShipInput[] },
+      callback?: (response: RoomActionAck) => void
+    ) => {
+      const roomCode = socketToRoom.get(socket.id);
+      if (!roomCode) {
+        callback?.({ ok: false, error: "Join a room first." });
+        return;
+      }
+
+      const room = rooms.get(roomCode);
+      if (!room) {
+        callback?.({ ok: false, error: "Room not found." });
+        return;
+      }
+
+      if (room.phase !== "placement") {
+        callback?.({ ok: false, error: "Placement phase is not active." });
+        return;
+      }
+
+      if (socket.id !== room.hostId && socket.id !== room.guestId) {
+        callback?.({ ok: false, error: "You are not a room participant." });
+        return;
+      }
+
+      const ships = payload?.ships;
+      const result = buildPlacementFromShips(Array.isArray(ships) ? ships : []);
+      if (!result.ok) {
+        callback?.({ ok: false, error: result.error });
+        return;
+      }
+
+      room.placement.drafts.set(socket.id, result.placement);
+      room.placement.readySockets.add(socket.id);
+      const actor = getRole(room, socket.id) === "host" ? "Host" : "Guest";
+      room.log.unshift(`${actor} locked fleet.`);
+      trimLog(room);
+
+      const bothReady =
+        room.guestId !== null &&
+        room.placement.readySockets.has(room.hostId) &&
+        room.placement.readySockets.has(room.guestId);
+
+      if (bothReady) {
+        const startResult = finalizePlacementAndStart(
+          room,
+          "Both fleets locked. Match started. Host shoots first."
+        );
+        emitRoomState(roomCode);
+        callback?.(startResult);
+        return;
+      }
+
+      emitRoomState(roomCode);
+      callback?.({ ok: true, roomCode });
+    }
+  );
 
   socket.on(
     "room:shoot",
