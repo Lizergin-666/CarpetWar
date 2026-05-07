@@ -16,7 +16,6 @@ const clientOrigin = process.env.CLIENT_ORIGIN ?? "http://localhost:3000";
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
 const ROOM_TURN_SECONDS = 20;
-const ROOM_PLACEMENT_SECONDS = 20;
 const BLITZ_MATCH_SECONDS = 180;
 const ROOM_TIMEOUT_SWEEP_MS = 500;
 const WATER = -1;
@@ -1185,7 +1184,7 @@ function startRoomPlacementPhase(room: RoomState, openerMessage: string): RoomAc
   room.round = 1;
   room.winnerSocketId = null;
   room.isDraw = false;
-  room.placement.deadlineMs = Date.now() + ROOM_PLACEMENT_SECONDS * 1000;
+  room.placement.deadlineMs = null;
   room.placement.lastSecondBroadcast = null;
   room.placement.readySockets.clear();
   room.placement.drafts.clear();
@@ -1247,7 +1246,7 @@ function makeRoomView(room: RoomState, socketId: string): RoomViewPayload {
   } else if (room.phase === "placement") {
     const you = yourPlacementReady ? "ready" : "placing";
     const opp = opponentPlacementReady ? "ready" : "placing";
-    status = `Placement phase: ${placementSecondsLeft}s left. You: ${you}, opponent: ${opp}.`;
+    status = `Placement phase: no timer. You: ${you}, opponent: ${opp}.`;
   } else if (room.phase === "playing") {
     const blitzSuffix =
       room.mode === "blitz3m" ? ` | Match: ${matchSecondsLeft}s` : "";
@@ -1620,8 +1619,8 @@ io.on("connection", (socket) => {
     const result = startRoomPlacementPhase(
       room,
       room.mode === "blitz3m"
-        ? "Blitz 3m: placement started (20s)."
-        : "Placement started (20s)."
+        ? "Blitz 3m: placement started (no timer)."
+        : "Placement started (no timer)."
     );
     if (!result.ok) {
       callback?.(result);
@@ -1672,8 +1671,8 @@ io.on("connection", (socket) => {
     const result = startRoomPlacementPhase(
       room,
       room.mode === "blitz3m"
-        ? "Blitz 3m rematch: placement started (20s)."
-        : "Rematch: placement started (20s)."
+        ? "Blitz 3m rematch: placement started (no timer)."
+        : "Rematch: placement started (no timer)."
     );
     if (!result.ok) {
       callback?.(result);
