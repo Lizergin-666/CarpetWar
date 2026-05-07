@@ -67,6 +67,7 @@ const ONLINE_PLACEMENT_FLEET = FLEET;
 const PLACEMENT_SHIP_TYPES = Array.from(new Set<number>(ONLINE_PLACEMENT_FLEET));
 const CARPET_IMAGE_WIDTH = 1448;
 const CARPET_IMAGE_HEIGHT = 1086;
+const BOARD_FRAME_REFERENCE_WIDTH = 1860;
 const PLACEMENT_CLICK_DELAY_MS = 500;
 const FALLBACK_SUPABASE_URL = "https://reiafaehflhbosmzkajm.supabase.co";
 const FALLBACK_SUPABASE_PUBLISHABLE_KEY =
@@ -583,22 +584,24 @@ function areShipCursorCalibrationsEqual(
 function buildShipCursorCalibrationFromVisual(
   length: number,
   orientation: "horizontal" | "vertical",
-  visual: PlacementShipVisual
+  visual: PlacementShipVisual,
+  boardScale = 1
 ): ShipCursorCalibration {
+  const safeScale = Math.max(0.01, boardScale);
   const longSide = orientation === "horizontal" ? visual.width : visual.height;
   const shortSide = orientation === "horizontal" ? visual.height : visual.width;
   return normalizeShipCursorCalibration({
-    deckSizePx: Math.max(24, longSide / Math.max(1, length)),
-    thicknessPx: Math.max(16, shortSide),
-    minLengthPx: Math.max(30, longSide),
+    deckSizePx: Math.max(24, longSide / Math.max(1, length) / safeScale),
+    thicknessPx: Math.max(16, shortSide / safeScale),
+    minLengthPx: Math.max(30, longSide / safeScale),
     anchorXPct: visual.anchorXPct,
     anchorYPct: visual.anchorYPct,
-    offsetXPx: visual.x - visual.baseX,
-    offsetYPx: visual.y - visual.baseY,
+    offsetXPx: (visual.x - visual.baseX) / safeScale,
+    offsetYPx: (visual.y - visual.baseY) / safeScale,
     rotationDeg: visual.rotationDeg,
     shadowAngleDeg: visual.shadowAngleDeg,
     shadowOpacity: visual.shadowOpacity,
-    shadowBlurPx: visual.shadowBlurPx,
+    shadowBlurPx: visual.shadowBlurPx / safeScale,
   });
 }
 
@@ -1541,8 +1544,17 @@ export default function Home() {
   const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
   const lastPlacementSignatureRef = useRef<string>("");
   const boardFrameRef = useRef<HTMLDivElement | null>(null);
+  const [boardFrameSize, setBoardFrameSize] = useState<{ width: number; height: number }>({
+    width: BOARD_FRAME_REFERENCE_WIDTH,
+    height: Math.round((BOARD_FRAME_REFERENCE_WIDTH * CARPET_IMAGE_HEIGHT) / CARPET_IMAGE_WIDTH),
+  });
+  const boardScaleRef = useRef<number>(1);
   const lastPointerPosRef = useRef<{ x: number; y: number } | null>(null);
   const pendingPlacementTimerRef = useRef<number | null>(null);
+  const boardFrameScale = useMemo(
+    () => clampNumber(boardFrameSize.width / BOARD_FRAME_REFERENCE_WIDTH, 0.2, 3),
+    [boardFrameSize.width]
+  );
 
   const socketUrl = useMemo(() => {
     const fromEnv = process.env.NEXT_PUBLIC_SOCKET_URL?.trim();
@@ -1627,6 +1639,72 @@ export default function Home() {
   useEffect(() => {
     isUiCalibrationModeRef.current = isUiCalibrationMode;
   }, [isUiCalibrationMode]);
+
+  useEffect(() => {
+    const node = boardFrameRef.current;
+    if (!node) return;
+
+    const updateSize = (): void => {
+      const rect = node.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const height = Math.max(1, rect.height);
+      setBoardFrameSize((prev) => {
+        if (Math.abs(prev.width - width) < 0.5 && Math.abs(prev.height - height) < 0.5) {
+          return prev;
+        }
+        return { width, height };
+      });
+    };
+
+    updateSize();
+
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateSize) : null;
+    resizeObserver?.observe(node);
+    window.addEventListener("resize", updateSize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
+  }, []);
+
+  useEffect(() => {
+    const prevScale = boardScaleRef.current;
+    if (!Number.isFinite(prevScale) || prevScale <= 0) {
+      boardScaleRef.current = boardFrameScale;
+      return;
+    }
+    if (Math.abs(boardFrameScale - prevScale) < 0.001) return;
+    const ratio = boardFrameScale / prevScale;
+    boardScaleRef.current = boardFrameScale;
+
+    setPlacementDraft((prev) =>
+      prev.map((ship) => {
+        if (!ship.visual) return ship;
+        return {
+          ...ship,
+          visual: {
+            ...ship.visual,
+            baseX: ship.visual.baseX * ratio,
+            baseY: ship.visual.baseY * ratio,
+            x: ship.visual.x * ratio,
+            y: ship.visual.y * ratio,
+            width: ship.visual.width * ratio,
+            height: ship.visual.height * ratio,
+            shadowBlurPx: ship.visual.shadowBlurPx * ratio,
+          },
+        };
+      })
+    );
+    setPlacementCursorPos((prev) => (prev ? { x: prev.x * ratio, y: prev.y * ratio } : prev));
+    if (lastPointerPosRef.current) {
+      lastPointerPosRef.current = {
+        x: lastPointerPosRef.current.x * ratio,
+        y: lastPointerPosRef.current.y * ratio,
+      };
+    }
+  }, [boardFrameScale]);
 
   useEffect(() => {
     const socket: Socket = io(socketUrl, {
@@ -2917,7 +2995,8 @@ export default function Home() {
       nextShipVisualDraft[ship.length][orientation] = buildShipCursorCalibrationFromVisual(
         ship.length,
         orientation,
-        ship.visual
+        ship.visual,
+        boardFrameScale
       );
     }
     const normalizedShipVisual = normalizeShipVisualCalibrationMap(nextShipVisualDraft);
@@ -3029,9 +3108,11 @@ export default function Home() {
           offsetXPx: 0,
           offsetYPx: 0,
         };
-    const longSide = Math.max(24, length * gameplayCalibration.deckSizePx);
-    const width = orientation === "horizontal" ? longSide : gameplayCalibration.thicknessPx;
-    const height = orientation === "horizontal" ? gameplayCalibration.thicknessPx : longSide;
+    const scale = boardFrameScale;
+    const longSide = Math.max(24 * scale, length * gameplayCalibration.deckSizePx * scale);
+    const thickness = Math.max(12 * scale, gameplayCalibration.thicknessPx * scale);
+    const width = orientation === "horizontal" ? longSide : thickness;
+    const height = orientation === "horizontal" ? thickness : longSide;
     let base: { x: number; y: number };
     if (isUiCalibrationMode) {
       if (boardFrameRef.current) {
@@ -3051,8 +3132,8 @@ export default function Home() {
     return {
       baseX: base.x,
       baseY: base.y,
-      x: base.x + gameplayCalibration.offsetXPx,
-      y: base.y + gameplayCalibration.offsetYPx,
+      x: base.x + gameplayCalibration.offsetXPx * scale,
+      y: base.y + gameplayCalibration.offsetYPx * scale,
       width,
       height,
       spriteOffsetXPx: 0,
@@ -3062,7 +3143,7 @@ export default function Home() {
       rotationDeg: gameplayCalibration.rotationDeg,
       shadowAngleDeg: gameplayCalibration.shadowAngleDeg,
       shadowOpacity: gameplayCalibration.shadowOpacity,
-      shadowBlurPx: gameplayCalibration.shadowBlurPx,
+      shadowBlurPx: gameplayCalibration.shadowBlurPx * scale,
     };
   }
 
@@ -3245,7 +3326,7 @@ export default function Home() {
 
             {isPlacementInteractionActive && (
               <div
-                className="absolute z-40 flex w-[12.4%] min-w-[120px] max-w-[200px] flex-col gap-1.5"
+                className="absolute z-40 flex w-[15.8%] min-w-[170px] max-w-[290px] flex-col gap-1.5"
                 style={{
                   left: "1.6%",
                   top: "calc(1.8% + min(22vw, 320px) * 0.56 + 20px)",
@@ -3297,7 +3378,7 @@ export default function Home() {
                                   src={getShipIconByOrientation(length, horizontal)}
                                   alt={`Ship ${length} ${horizontal ? "horizontal" : "vertical"}`}
                                   fill
-                                  sizes="170px"
+                                  sizes="260px"
                                   className="object-contain"
                                 />
                               </button>
@@ -3332,7 +3413,7 @@ export default function Home() {
                           src={getShipIconByOrientation(length, displayHorizontal)}
                           alt={`Ship ${length}`}
                           fill
-                          sizes="170px"
+                          sizes="260px"
                           className="object-contain"
                         />
                         {placedCount > 0 && (
@@ -3407,7 +3488,8 @@ export default function Home() {
                           filter: buildShipShadowFilter(
                             visual.shadowAngleDeg,
                             visual.shadowOpacity,
-                            visual.shadowBlurPx
+                            visual.shadowBlurPx,
+                            SHIP_SHADOW_DISTANCE_PX * boardFrameScale
                           ),
                         }}
                       />
@@ -3474,9 +3556,10 @@ export default function Home() {
                     className="pointer-events-none h-full w-full opacity-75"
                     style={{
                       filter: buildShipShadowFilter(
-                        activeShipCursorCalibration.shadowAngleDeg,
-                        activeShipCursorCalibration.shadowOpacity,
-                        activeShipCursorCalibration.shadowBlurPx
+                        placementCursorVisual.shadowAngleDeg,
+                        placementCursorVisual.shadowOpacity,
+                        placementCursorVisual.shadowBlurPx,
+                        SHIP_SHADOW_DISTANCE_PX * boardFrameScale
                       ),
                     }}
                   />

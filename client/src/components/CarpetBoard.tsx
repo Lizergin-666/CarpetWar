@@ -265,7 +265,7 @@ interface CarpetBoardProps {
   enemyShipHits: number[];
   showDefenseLayer: boolean;
   canShoot: boolean;
-  onCellClick: (row: number, col: number) => void;
+  onCellClick: (row: number, col: number, center?: { x: number; y: number }) => void;
   hitEffects?: HitEffect[];
   waterValue?: number;
   calibrationStorageKey?: string;
@@ -275,7 +275,7 @@ interface CarpetBoardProps {
   showCalibrationControls?: boolean;
   placementMode?: boolean;
   placementHighlights?: PlacementHighlightCell[];
-  onPlacementCellHover?: (row: number, col: number) => void;
+  onPlacementCellHover?: (row: number, col: number, center?: { x: number; y: number }) => void;
   onPlacementLeave?: () => void;
   onPlacementRotate?: () => void;
 }
@@ -1054,18 +1054,18 @@ export function CarpetBoard({
               onClick={() => {
                 if (!canClick) return;
                 if (placementMode) {
-                  onCellClick(row, col);
+                  onCellClick(row, col, center);
                   return;
                 }
                 if (enableHandStrike) {
                   runShotSequence(row, col, center);
                 } else {
-                  onCellClick(row, col);
+                  onCellClick(row, col, center);
                 }
               }}
               onPointerEnter={() => {
                 if (!placementMode) return;
-                onPlacementCellHover?.(row, col);
+                onPlacementCellHover?.(row, col, center);
               }}
               onContextMenu={(event) => {
                 if (!placementMode) return;
