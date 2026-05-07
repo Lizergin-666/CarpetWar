@@ -1117,7 +1117,9 @@ export default function Home() {
       setJoinCode(payload.roomCode);
       setOnlineNotice(payload.status);
       setGameMode("online");
-      setIsOnlineLobbyOpen(true);
+      if (payload.phase === "placement" || payload.phase === "playing") {
+        setIsOnlineLobbyOpen(false);
+      }
       syncRoomCodeToUrl(payload.roomCode);
     });
 
@@ -1907,9 +1909,11 @@ export default function Home() {
 
   function startOnlineMatch(): void {
     if (!socketConnected) return;
+    setIsOnlineLobbyOpen(false);
     socketRef.current?.emit("room:start", (response: RoomActionAck): void => {
       if (!response.ok) {
         setOnlineNotice(response.error ?? "Failed to start match.");
+        setIsOnlineLobbyOpen(true);
       }
     });
   }
@@ -2694,6 +2698,13 @@ export default function Home() {
                   className="rounded-lg border border-emerald-500/70 bg-emerald-500/20 px-3 py-2 text-sm text-emerald-100 transition hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Start match
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsOnlineLobbyOpen(false)}
+                  className="rounded-lg border border-cyan-500/70 bg-cyan-500/20 px-3 py-2 text-sm text-cyan-100 transition hover:bg-cyan-500/30"
+                >
+                  Go to board
                 </button>
               </div>
 
