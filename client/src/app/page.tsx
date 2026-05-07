@@ -1253,6 +1253,7 @@ export default function Home() {
     "horizontal" | "vertical"
   >("horizontal");
   const [shipCursorDragState, setShipCursorDragState] = useState<ShipCursorDragState | null>(null);
+  const [shipCursorPinned, setShipCursorPinned] = useState<boolean>(false);
 
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const [roomView, setRoomView] = useState<RoomViewPayload | null>(null);
@@ -1295,6 +1296,7 @@ export default function Home() {
   const onlineRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
   const lastPlacementSignatureRef = useRef<string>("");
+  const boardFrameRef = useRef<HTMLDivElement | null>(null);
 
   const socketUrl = useMemo(
     () => process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000",
@@ -1934,6 +1936,8 @@ export default function Home() {
     if (roomView?.phase !== "placement") {
       setPlacementHoverCell(null);
       setPlacementCursorPos(null);
+      setShipCursorPinned(false);
+      setShipCursorDragState(null);
       return;
     }
     if (!roomView.yourPlacementReady) {
@@ -1944,6 +1948,12 @@ export default function Home() {
       lastPlacementSignatureRef.current = "";
     }
   }, [gameMode, roomView?.phase, roomView?.roomCode, roomView?.yourPlacementReady]);
+
+  useEffect(() => {
+    if (isPlacementInteractionActive) return;
+    setShipCursorPinned(false);
+    setShipCursorDragState(null);
+  }, [isPlacementInteractionActive]);
 
   function resetGame(nextDifficulty?: BotDifficulty): void {
     const difficulty = nextDifficulty ?? botDifficulty;
@@ -2316,6 +2326,8 @@ export default function Home() {
   function enterUiCalibrationMode(): void {
     setUiCalibrationDraft(cloneUiCalibration(uiCalibration));
     setIsUiCalibrationMode(true);
+    setShipCursorPinned(false);
+    setShipCursorDragState(null);
     setStartPanel("online");
     setIsMenuOpen(true);
   }
@@ -2323,6 +2335,8 @@ export default function Home() {
   function cancelUiCalibrationMode(): void {
     setUiCalibrationDraft(cloneUiCalibration(uiCalibration));
     setIsUiCalibrationMode(false);
+    setShipCursorPinned(false);
+    setShipCursorDragState(null);
   }
 
   function saveUiCalibrationMode(): void {
@@ -2330,6 +2344,8 @@ export default function Home() {
     setUiCalibration(normalized);
     setUiCalibrationDraft(cloneUiCalibration(normalized));
     setIsUiCalibrationMode(false);
+    setShipCursorPinned(false);
+    setShipCursorDragState(null);
     if (typeof window !== "undefined") {
       localStorage.setItem(UI_CALIBRATION_STORAGE_KEY, JSON.stringify(normalized));
     }
@@ -2337,6 +2353,23 @@ export default function Home() {
 
   function resetUiCalibrationMode(): void {
     setUiCalibrationDraft(cloneUiCalibration(DEFAULT_UI_CALIBRATION));
+    setShipCursorPinned(false);
+    setShipCursorDragState(null);
+  }
+
+  function toggleShipCursorPin(): void {
+    if (!isUiCalibrationMode || !isPlacementInteractionActive) return;
+    if (shipCursorPinned) {
+      setShipCursorPinned(false);
+      return;
+    }
+    if (!placementCursorPos) {
+      const rect = boardFrameRef.current?.getBoundingClientRect();
+      if (rect) {
+        setPlacementCursorPos({ x: rect.width * 0.5, y: rect.height * 0.55 });
+      }
+    }
+    setShipCursorPinned(true);
   }
 
   function updateCalibrationRect(
@@ -2386,6 +2419,7 @@ export default function Home() {
     if (selectedPlacementLength === null) return;
     event.preventDefault();
     event.stopPropagation();
+    setShipCursorPinned(true);
     setShipCursorDragState({
       handle,
       orientation: selectedPlacementHorizontal ? "horizontal" : "vertical",
@@ -2460,11 +2494,13 @@ export default function Home() {
       <div className="relative h-full w-full">
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <div
+            ref={boardFrameRef}
             className="relative overflow-hidden"
             style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
             onMouseMove={(event) => {
               if (!isPlacementInteractionActive) return;
               if (selectedPlacementLength === null) return;
+              if (shipCursorPinned) return;
               const rect = event.currentTarget.getBoundingClientRect();
               setPlacementCursorPos({
                 x: event.clientX - rect.left,
@@ -2472,6 +2508,7 @@ export default function Home() {
               });
             }}
             onMouseLeave={() => {
+              if (shipCursorPinned) return;
               setPlacementCursorPos(null);
               if (isPlacementInteractionActive) {
                 setPlacementHoverCell(null);
@@ -3096,25 +3133,39 @@ export default function Home() {
               <div className="mt-3 rounded border border-cyan-900/50 bg-black/40 p-2">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="text-[10px] font-semibold text-cyan-100">Ship Cursor</div>
-                  <button
-                    type="button"
-                    onDoubleClick={() =>
-                      setShipCalibrationOrientation((prev) =>
-                        prev === "horizontal" ? "vertical" : "horizontal"
-                      )
-                    }
-                    onClick={() =>
-                      setShipCalibrationOrientation((prev) =>
-                        prev === "horizontal" ? "vertical" : "horizontal"
-                      )
-                    }
-                    className="rounded border border-cyan-500/70 bg-cyan-500/20 px-2 py-1 text-[10px] text-cyan-100"
-                  >
-                    {shipCalibrationOrientation.toUpperCase()}
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={toggleShipCursorPin}
+                      className={`rounded border px-2 py-1 text-[10px] ${
+                        shipCursorPinned
+                          ? "border-amber-500/80 bg-amber-500/25 text-amber-100"
+                          : "border-cyan-500/70 bg-cyan-500/20 text-cyan-100"
+                      }`}
+                    >
+                      {shipCursorPinned ? "Unpin cursor" : "Pin cursor"}
+                    </button>
+                    <button
+                      type="button"
+                      onDoubleClick={() =>
+                        setShipCalibrationOrientation((prev) =>
+                          prev === "horizontal" ? "vertical" : "horizontal"
+                        )
+                      }
+                      onClick={() =>
+                        setShipCalibrationOrientation((prev) =>
+                          prev === "horizontal" ? "vertical" : "horizontal"
+                        )
+                      }
+                      className="rounded border border-cyan-500/70 bg-cyan-500/20 px-2 py-1 text-[10px] text-cyan-100"
+                    >
+                      {shipCalibrationOrientation.toUpperCase()}
+                    </button>
+                  </div>
                 </div>
                 <div className="mb-2 text-[10px] text-cyan-100/80">
-                  Tip: during placement, double-click on board also rotates ship orientation.
+                  Tip: press Pin cursor, then drag handle points around the ship. Double-click on
+                  board rotates ship orientation.
                 </div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1">
                   <label>
