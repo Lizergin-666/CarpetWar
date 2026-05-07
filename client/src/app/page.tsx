@@ -28,13 +28,25 @@ const UI_START_BUTTON_URL = "/ui/btn-start.png";
 const UI_MENU_PANEL_URL = "/ui/menu-panel.png";
 const UI_ONLINE_PANEL_URL = "/ui/panel-online.png";
 const UI_LEVEL_PANEL_URL = "/ui/panel-level.png";
-const UI_DECOR_BLUE_URL = "/ui/character-blue1.png";
-const UI_DECOR_RED_URL = "/ui/character-red1-v2.png";
+const UI_DECOR_BLUE_URL = "/ui/character-blue-anim.gif";
+const UI_DECOR_RED_URL = "/ui/character-red-anim.gif";
 const UI_HEALTH_BLUE_URL = "/ui/health-blue.png";
 const UI_HEALTH_RED_URL = "/ui/health-red.png";
 const UI_DOOR_LEFT_URL = "/ui/door-left.png";
 const UI_DOOR_RIGHT_URL = "/ui/door-right.png";
+const UI_BUTTON_STAT_URL = "/ui/btn-stat.png";
+const UI_BUTTON_SOUND_URL = "/ui/btn-sound.png";
+const UI_BUTTON_LOGIN_URL = "/ui/btn-login.png";
+const UI_BUTTON_LEADER_URL = "/ui/btn-leader.png";
+const UI_BUTTON_GOOGLE_URL = "/ui/btn-google.png";
+const UI_BUTTON_NIGHTMARE_URL = "/ui/btn-nightmare.png";
+const UI_BUTTON_OFFLINE_URL = "/ui/btn-offline.png";
+const UI_BUTTON_ONLINE_GREEN_URL = "/ui/btn-online-green.png";
+const UI_BUTTON_BABY_URL = "/ui/btn-baby.png";
+const UI_BUTTON_MAN_URL = "/ui/btn-man.png";
 const BUTTON_SOUND_URL = "/ui/button.mp3";
+const MODAL_BUTTON_MOTION_CLASS =
+  "transition-transform duration-150 ease-out hover:-translate-y-[2px] hover:scale-[1.03] active:translate-y-[1px] active:scale-[0.98]";
 const MENU_BUTTON_RIGHT_PCT = 1.9;
 const MENU_BUTTON_TOP_PCT = 2.3;
 const MENU_BUTTON_WIDTH_PCT = 16;
@@ -858,6 +870,7 @@ export default function Home() {
   const missEventCountRef = useRef<number>(0);
   const hitEventCountRef = useRef<number>(0);
   const radarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
+  const onlineRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
 
   const socketUrl = useMemo(
@@ -1212,6 +1225,40 @@ export default function Home() {
   ]);
 
   useEffect(() => {
+    if (gameMode !== "online") {
+      onlineRadarSnapshotRef.current = createGrid<Mark>("unknown");
+      return;
+    }
+
+    const nextRadar = roomView?.playerRadar ?? createGrid<Mark>("unknown");
+    const prevRadar = onlineRadarSnapshotRef.current;
+    const newHitEffects: HitEffect[] = [];
+
+    for (let row = 0; row < BOARD_SIZE; row += 1) {
+      for (let col = 0; col < BOARD_SIZE; col += 1) {
+        const before = prevRadar[row]?.[col] ?? "unknown";
+        const after = nextRadar[row]?.[col] ?? "unknown";
+        if (before !== "unknown" || after === "unknown") continue;
+
+        playSound(impactSoundRef);
+        if (after === "hit") {
+          newHitEffects.push({
+            id: `online-${Date.now()}-${row}-${col}-${Math.random()
+              .toString(16)
+              .slice(2, 6)}`,
+            row,
+            col,
+            startedAtMs: Date.now(),
+          });
+        }
+      }
+    }
+
+    appendHitEffects(newHitEffects);
+    onlineRadarSnapshotRef.current = nextRadar.map((row) => row.slice());
+  }, [appendHitEffects, gameMode, playSound, roomView?.playerRadar]);
+
+  useEffect(() => {
     if (gameMode !== "solo") return;
     if (game.turn !== "bot") return;
     if (game.winner !== null) return;
@@ -1559,6 +1606,10 @@ export default function Home() {
     }
   }
 
+  function handleToggleSound(): void {
+    handleSetSoundEnabled(!isSoundEnabled);
+  }
+
   return (
     <main className="h-[100dvh] w-screen overflow-hidden bg-black">
       <div className="relative h-full w-full">
@@ -1623,19 +1674,15 @@ export default function Home() {
               <Image src={UI_START_BUTTON_URL} alt="Start" width={489} height={150} />
             </button>
 
-            <Image
+            <img
               src={UI_DECOR_BLUE_URL}
               alt=""
-              width={1067}
-              height={1364}
               aria-hidden="true"
               className="pointer-events-none absolute bottom-[-8.6%] left-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none"
             />
-            <Image
+            <img
               src={UI_DECOR_RED_URL}
               alt=""
-              width={1034}
-              height={1372}
               aria-hidden="true"
               className="pointer-events-none absolute bottom-[-8.6%] right-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none"
             />
@@ -1679,36 +1726,76 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={handleOnlineModeClick}
-                          className="absolute left-[8.5%] top-[41.4%] h-[15.4%] w-[83%] rounded-xl transition duration-150 hover:scale-[1.015] active:scale-[0.985]"
+                          className={`absolute left-[8.5%] top-[41.4%] h-[15.4%] w-[83%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
                           aria-label="Online mode"
-                        />
+                        >
+                          <Image
+                            src={UI_BUTTON_ONLINE_GREEN_URL}
+                            alt=""
+                            fill
+                            sizes="(max-width: 768px) 60vw, 320px"
+                            className="object-contain"
+                          />
+                        </button>
                         <button
                           type="button"
                           onClick={handleOfflineModeClick}
-                          className="absolute left-[8.5%] top-[59.1%] h-[15.4%] w-[83%] rounded-xl transition duration-150 hover:scale-[1.015] active:scale-[0.985]"
+                          className={`absolute left-[8.5%] top-[59.1%] h-[15.4%] w-[83%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
                           aria-label="Offline mode"
-                        />
+                        >
+                          <Image
+                            src={UI_BUTTON_OFFLINE_URL}
+                            alt=""
+                            fill
+                            sizes="(max-width: 768px) 60vw, 320px"
+                            className="object-contain"
+                          />
+                        </button>
                       </>
                     ) : (
                       <>
                         <button
                           type="button"
                           onClick={() => handleLevelChoice("easy")}
-                          className="absolute left-[7.6%] top-[37.9%] h-[15.6%] w-[84.8%] rounded-xl transition duration-150 hover:scale-[1.012] active:scale-[0.988]"
+                          className={`absolute left-[7.6%] top-[37.9%] h-[15.6%] w-[84.8%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
                           aria-label="Baby level"
-                        />
+                        >
+                          <Image
+                            src={UI_BUTTON_BABY_URL}
+                            alt=""
+                            fill
+                            sizes="(max-width: 768px) 60vw, 330px"
+                            className="object-contain"
+                          />
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleLevelChoice("medium")}
-                          className="absolute left-[7.6%] top-[56.4%] h-[15.6%] w-[84.8%] rounded-xl transition duration-150 hover:scale-[1.012] active:scale-[0.988]"
+                          className={`absolute left-[7.6%] top-[56.4%] h-[15.6%] w-[84.8%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
                           aria-label="Man level"
-                        />
+                        >
+                          <Image
+                            src={UI_BUTTON_MAN_URL}
+                            alt=""
+                            fill
+                            sizes="(max-width: 768px) 60vw, 330px"
+                            className="object-contain"
+                          />
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleLevelChoice("hard")}
-                          className="absolute left-[7.6%] top-[74.8%] h-[15.6%] w-[84.8%] rounded-xl transition duration-150 hover:scale-[1.012] active:scale-[0.988]"
+                          className={`absolute left-[7.6%] top-[74.8%] h-[15.6%] w-[84.8%] rounded-xl ${MODAL_BUTTON_MOTION_CLASS}`}
                           aria-label="Nightmare level"
-                        />
+                        >
+                          <Image
+                            src={UI_BUTTON_NIGHTMARE_URL}
+                            alt=""
+                            fill
+                            sizes="(max-width: 768px) 60vw, 330px"
+                            className="object-contain"
+                          />
+                        </button>
                       </>
                     )}
                   </div>
@@ -1734,41 +1821,74 @@ export default function Home() {
                 >
                   <div className="relative">
                     <Image src={UI_MENU_PANEL_URL} alt="Menu panel" width={1058} height={1322} />
-
-                  <button
-                    type="button"
-                    onClick={() => handleSetSoundEnabled(true)}
-                    className="absolute left-[56.5%] top-[22.9%] h-[6.9%] w-[15.5%] rounded-full transition duration-150 hover:scale-[1.06] active:scale-[0.96]"
-                    aria-label="Sound on"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => handleSetSoundEnabled(false)}
-                    className="absolute left-[72.6%] top-[22.9%] h-[6.9%] w-[15.5%] rounded-full transition duration-150 hover:scale-[1.06] active:scale-[0.96]"
-                    aria-label="Sound off"
-                  />
-
-                  <div
-                    className={`pointer-events-none absolute top-[22.95%] h-[6.7%] w-[15.6%] rounded-full transition-all duration-200 ${
-                      isSoundEnabled
-                        ? "left-[56.45%] bg-lime-400/28 shadow-[0_0_14px_rgba(163,230,53,0.65)]"
-                        : "left-[72.55%] bg-lime-400/28 shadow-[0_0_14px_rgba(163,230,53,0.65)]"
-                    }`}
-                  />
-                  <div
-                    className={`pointer-events-none absolute top-[22.95%] h-[6.7%] w-[15.6%] rounded-full transition-all duration-200 ${
-                      isSoundEnabled
-                        ? "left-[72.55%] bg-black/40"
-                        : "left-[56.45%] bg-black/40"
-                    }`}
-                  />
+                    <button
+                      type="button"
+                      onClick={handleToggleSound}
+                      className={`absolute left-[11.1%] top-[20.4%] h-[13.2%] w-[77.8%] ${MODAL_BUTTON_MOTION_CLASS}`}
+                      aria-label="Toggle music"
+                    >
+                      <Image
+                        src={UI_BUTTON_SOUND_URL}
+                        alt=""
+                        fill
+                        sizes="(max-width: 768px) 55vw, 260px"
+                        className="object-contain"
+                      />
+                    </button>
+                    <div className="pointer-events-none absolute left-1/2 top-[31.1%] -translate-x-1/2 text-[clamp(10px,0.8vw,13px)] font-semibold tracking-[0.15em] text-[#f4e2b8]">
+                      {isSoundEnabled ? "MUSIC ON" : "MUSIC OFF"}
+                    </div>
 
                     <button
                       type="button"
                       onClick={handleOpenStatistics}
-                      className="absolute left-[11.2%] top-[37.5%] h-[15.8%] w-[77.6%] rounded-xl transition duration-150 hover:scale-[1.03] active:scale-[0.97]"
+                      className={`absolute left-[11.1%] top-[38.2%] h-[13.2%] w-[77.8%] ${MODAL_BUTTON_MOTION_CLASS}`}
                       aria-label="Open statistics"
-                    />
+                    >
+                      <Image
+                        src={UI_BUTTON_STAT_URL}
+                        alt=""
+                        fill
+                        sizes="(max-width: 768px) 55vw, 260px"
+                        className="object-contain"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playButtonClickSound();
+                        setIsMenuOpen(false);
+                        setIsStatsOpen(true);
+                      }}
+                      className={`absolute left-[11.1%] top-[55.9%] h-[13.2%] w-[77.8%] ${MODAL_BUTTON_MOTION_CLASS}`}
+                      aria-label="Open leaderboard"
+                    >
+                      <Image
+                        src={UI_BUTTON_LEADER_URL}
+                        alt=""
+                        fill
+                        sizes="(max-width: 768px) 55vw, 260px"
+                        className="object-contain"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playButtonClickSound();
+                        setIsMenuOpen(false);
+                        setIsOnlineLobbyOpen(true);
+                      }}
+                      className={`absolute left-[11.1%] top-[73.6%] h-[13.2%] w-[77.8%] ${MODAL_BUTTON_MOTION_CLASS}`}
+                      aria-label="Open login"
+                    >
+                      <Image
+                        src={UI_BUTTON_LOGIN_URL}
+                        alt=""
+                        fill
+                        sizes="(max-width: 768px) 55vw, 260px"
+                        className="object-contain"
+                      />
+                    </button>
                   </div>
                 </div>
               </>
@@ -1842,9 +1962,15 @@ export default function Home() {
                       onClick={() => {
                         void handleGoogleLogin();
                       }}
-                      className="rounded-md border border-emerald-500/70 bg-emerald-500/20 px-3 py-1 text-sm text-emerald-100 hover:bg-emerald-500/30"
+                      className={`relative h-10 w-36 ${MODAL_BUTTON_MOTION_CLASS}`}
                     >
-                      Login with Google
+                      <Image
+                        src={UI_BUTTON_GOOGLE_URL}
+                        alt="Login with Google"
+                        fill
+                        sizes="160px"
+                        className="object-contain"
+                      />
                     </button>
                   )}
                   <button

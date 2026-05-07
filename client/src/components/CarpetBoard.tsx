@@ -1113,7 +1113,7 @@ export function CarpetBoard({
         );
         const corners = cellCorners(boardBoundary, effect.row, effect.col);
         const center = centerPoint(boardBoundary, effect.row, effect.col);
-        const size = missMarkSize(corners) * 2.4;
+        const size = missMarkSize(corners) * 3.4;
         return {
           id: effect.id,
           frameHref: HIT_SPLASH_FRAMES[frameIndex],
@@ -1427,7 +1427,7 @@ export function CarpetBoard({
                 key={effect.id}
                 src={effect.frameHref}
                 alt=""
-                className="pointer-events-none absolute"
+                className="pointer-events-none absolute z-20"
                 style={{
                   left: `${effect.leftPct}%`,
                   top: `${effect.topPct}%`,
