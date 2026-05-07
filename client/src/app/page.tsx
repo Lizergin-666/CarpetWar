@@ -2143,13 +2143,11 @@ export default function Home() {
   }
 
   function handleMenuToggle(): void {
-    if (isUiCalibrationMode) return;
     playButtonClickSound();
     setIsMenuOpen((prev) => !prev);
   }
 
   function handleStartClick(): void {
-    if (isUiCalibrationMode) return;
     playButtonClickSound();
     setStartPanel("online");
     setIsMenuOpen(false);
@@ -2868,10 +2866,7 @@ export default function Home() {
                 <button
                   type="button"
                   aria-label="Close start panel"
-                  onClick={() => {
-                    if (isUiCalibrationMode) return;
-                    handleCloseStartPanel();
-                  }}
+                  onClick={handleCloseStartPanel}
                   className="absolute inset-0 z-[45]"
                 />
                 <div className="absolute bottom-[12.5%] left-1/2 z-50 w-[25.8%] min-w-[250px] max-w-[390px] -translate-x-1/2">
@@ -2887,10 +2882,7 @@ export default function Home() {
                       <>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (isUiCalibrationMode) return;
-                            handleOnlineModeClick();
-                          }}
+                          onClick={handleOnlineModeClick}
                           className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
                             isUiCalibrationMode
                               ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
@@ -2909,10 +2901,7 @@ export default function Home() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (isUiCalibrationMode) return;
-                            handleOfflineModeClick();
-                          }}
+                          onClick={handleOfflineModeClick}
                           className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
                             isUiCalibrationMode
                               ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
@@ -2934,10 +2923,7 @@ export default function Home() {
                       <>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (isUiCalibrationMode) return;
-                            handleLevelChoice("easy");
-                          }}
+                          onClick={() => handleLevelChoice("easy")}
                           className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
                             isUiCalibrationMode
                               ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
@@ -2956,10 +2942,7 @@ export default function Home() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (isUiCalibrationMode) return;
-                            handleLevelChoice("medium");
-                          }}
+                          onClick={() => handleLevelChoice("medium")}
                           className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
                             isUiCalibrationMode
                               ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
@@ -2978,10 +2961,7 @@ export default function Home() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (isUiCalibrationMode) return;
-                            handleLevelChoice("hard");
-                          }}
+                          onClick={() => handleLevelChoice("hard")}
                           className={`absolute rounded-xl ${MODAL_BUTTON_MOTION_CLASS} ${
                             isUiCalibrationMode
                               ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
