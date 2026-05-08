@@ -62,6 +62,9 @@ const SHIP_VISUAL_CALIBRATION_STORAGE_KEY = "sea-war.ship-visual-calibration.v1"
 const PLACEMENT_UI_CALIBRATION_STORAGE_KEY = "sea-war.placement-ui-calibration.v1";
 const HIT_MARKER_CALIBRATION_STORAGE_KEY = "sea-war.hit-marker-calibration.v1";
 const FORK_VARIANT_CALIBRATION_STORAGE_KEY = "sea-war.fork-variant-calibration.v1";
+const CARPET_BOARD_BOUNDARY_STORAGE_KEY = "sea-war.carpet-board-boundary.v3";
+const CARPET_BOARD_BOUNDARY_LEGACY_KEYS = ["sea-war.carpet-board-boundary.v2"];
+const SPRITE_TRANSFORM_STORAGE_KEY = "sea-war.sprite-transform-map.v1";
 const MODAL_BUTTON_MOTION_CLASS =
   "transition-transform duration-150 ease-out hover:-translate-y-[2px] hover:scale-[1.03] active:translate-y-[1px] active:scale-[0.98]";
 const MENU_BUTTON_RIGHT_PCT = 1.9;
@@ -417,6 +420,8 @@ interface SharedCalibrationSnapshot {
   placementUiCalibration: PlacementUiCalibration;
   hitMarkerCalibrationMap: HitMarkerCalibrationMap;
   forkVariantCalibrationMap: ForkVariantCalibrationMap;
+  carpetBoardBoundary: Record<string, unknown> | null;
+  spriteTransformMap: Record<string, unknown> | null;
 }
 
 interface SharedCalibrationResponse {
@@ -908,6 +913,31 @@ function writeStoredForkVariantCalibrationMap(map: ForkVariantCalibrationMap): v
   localStorage.setItem(FORK_VARIANT_CALIBRATION_STORAGE_KEY, JSON.stringify(map));
 }
 
+function parseStoredRecord(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredRecord(key: string): Record<string, unknown> | null {
+  if (typeof window === "undefined") return null;
+  return parseStoredRecord(localStorage.getItem(key));
+}
+
+function normalizeSharedRecordCandidate(
+  candidate: unknown
+): Record<string, unknown> | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return null;
+  }
+  return candidate as Record<string, unknown>;
+}
+
 function normalizeUiCalibrationCandidate(candidate: unknown): UiCalibrationConfig {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
     return cloneUiCalibration(DEFAULT_UI_CALIBRATION);
@@ -1042,6 +1072,8 @@ function normalizeSharedCalibrationSnapshot(candidate: unknown): SharedCalibrati
     forkVariantCalibrationMap: normalizeForkVariantCalibrationMapCandidate(
       parsed.forkVariantCalibrationMap
     ),
+    carpetBoardBoundary: normalizeSharedRecordCandidate(parsed.carpetBoardBoundary),
+    spriteTransformMap: normalizeSharedRecordCandidate(parsed.spriteTransformMap),
   };
 }
 
@@ -1058,6 +1090,8 @@ function buildSharedCalibrationSnapshot(
     forkVariantCalibrationMap: normalizeForkVariantCalibrationMapCandidate(
       values.forkVariantCalibrationMap
     ),
+    carpetBoardBoundary: normalizeSharedRecordCandidate(values.carpetBoardBoundary),
+    spriteTransformMap: normalizeSharedRecordCandidate(values.spriteTransformMap),
   };
 }
 
@@ -1068,6 +1102,8 @@ function createDefaultSharedCalibrationSnapshot(): SharedCalibrationSnapshot {
     placementUiCalibration: { ...DEFAULT_PLACEMENT_UI_CALIBRATION },
     hitMarkerCalibrationMap: createDefaultHitMarkerCalibrationMap(),
     forkVariantCalibrationMap: createDefaultForkVariantCalibrationMap(),
+    carpetBoardBoundary: null,
+    spriteTransformMap: null,
   };
 }
 
@@ -2114,6 +2150,7 @@ export default function Home() {
   const boardFrameRef = useRef<HTMLDivElement | null>(null);
   const turnSwapTimersRef = useRef<number[]>([]);
   const calibrationSyncAttemptedRef = useRef<boolean>(false);
+  const [carpetBoardReloadToken, setCarpetBoardReloadToken] = useState<number>(0);
   const [markerSample, setMarkerSample] = useState<{
     centerX: number;
     centerY: number;
@@ -2314,12 +2351,16 @@ export default function Home() {
 
     let cancelled = false;
     const endpoint = `${socketUrl.replace(/\/+$/, "")}/calibration`;
+    const localCarpetBoardBoundary = readStoredRecord(CARPET_BOARD_BOUNDARY_STORAGE_KEY);
+    const localSpriteTransformMap = readStoredRecord(SPRITE_TRANSFORM_STORAGE_KEY);
     const localSnapshot = buildSharedCalibrationSnapshot({
       uiCalibration,
       shipVisualCalibration,
       placementUiCalibration,
       hitMarkerCalibrationMap,
       forkVariantCalibrationMap,
+      carpetBoardBoundary: localCarpetBoardBoundary,
+      spriteTransformMap: localSpriteTransformMap,
     });
     const localHasCustomCalibration =
       serializeSharedCalibrationSnapshot(localSnapshot) !==
@@ -2335,11 +2376,29 @@ export default function Home() {
       setHitMarkerCalibrationMap(snapshot.hitMarkerCalibrationMap);
       setForkVariantCalibrationMap(snapshot.forkVariantCalibrationMap);
       try {
+        const shouldReloadBoard =
+          Boolean(snapshot.carpetBoardBoundary) || Boolean(snapshot.spriteTransformMap);
         localStorage.setItem(UI_CALIBRATION_STORAGE_KEY, JSON.stringify(snapshot.uiCalibration));
         writeStoredShipVisualCalibration(snapshot.shipVisualCalibration);
         writeStoredPlacementUiCalibration(snapshot.placementUiCalibration);
         writeStoredHitMarkerCalibrationMap(snapshot.hitMarkerCalibrationMap);
         writeStoredForkVariantCalibrationMap(snapshot.forkVariantCalibrationMap);
+        if (snapshot.carpetBoardBoundary) {
+          const serializedBoundary = JSON.stringify(snapshot.carpetBoardBoundary);
+          localStorage.setItem(CARPET_BOARD_BOUNDARY_STORAGE_KEY, serializedBoundary);
+          for (const legacyKey of CARPET_BOARD_BOUNDARY_LEGACY_KEYS) {
+            localStorage.setItem(legacyKey, serializedBoundary);
+          }
+        }
+        if (snapshot.spriteTransformMap) {
+          localStorage.setItem(
+            SPRITE_TRANSFORM_STORAGE_KEY,
+            JSON.stringify(snapshot.spriteTransformMap)
+          );
+        }
+        if (shouldReloadBoard) {
+          setCarpetBoardReloadToken((prev) => prev + 1);
+        }
       } catch {
         // Ignore storage failures.
       }
@@ -2353,6 +2412,23 @@ export default function Home() {
           const sharedSnapshot = normalizeSharedCalibrationSnapshot(payload.calibration);
           if (sharedSnapshot) {
             applySnapshot(sharedSnapshot);
+            const mergedSnapshot = buildSharedCalibrationSnapshot({
+              ...sharedSnapshot,
+              carpetBoardBoundary:
+                sharedSnapshot.carpetBoardBoundary ?? localSnapshot.carpetBoardBoundary,
+              spriteTransformMap:
+                sharedSnapshot.spriteTransformMap ?? localSnapshot.spriteTransformMap,
+            });
+            if (
+              serializeSharedCalibrationSnapshot(mergedSnapshot) !==
+              serializeSharedCalibrationSnapshot(sharedSnapshot)
+            ) {
+              await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ calibration: mergedSnapshot }),
+              });
+            }
             return;
           }
         }
@@ -4615,6 +4691,7 @@ export default function Home() {
               }}
             >
               <CarpetBoard
+                key={`carpet-board-${carpetBoardReloadToken}`}
                 attackRadar={gameMode === "online" ? onlineAttackRadarView : soloAttackRadarView}
                 defenseRadar={gameMode === "online" ? onlineDefenseRadarView : soloDefenseRadarView}
                 shipGrid={gameMode === "online" ? onlineShipGridView : soloShipGridView}
