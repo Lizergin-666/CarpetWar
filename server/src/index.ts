@@ -50,6 +50,11 @@ const WATER = -1;
 const ROOM_FLEET = [5, 4, 4, 3, 3, 3, 2, 2, 2, 2] as const;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const STATS_FILE_PATH = path.resolve(process.cwd(), "data", "pvp-stats.json");
+const SHARED_CALIBRATION_FILE_PATH = path.resolve(
+  process.cwd(),
+  "data",
+  "shared-calibration.json"
+);
 const ROOM_FLEET_SORTED_ASC = [...ROOM_FLEET].sort((a, b) => a - b);
 const STATS_PERSISTENCE_MODE = String(
   process.env.STATS_PERSISTENCE_MODE ?? "local"
@@ -198,6 +203,12 @@ interface StatsFilePayload {
   stats: PlayerStat[];
 }
 
+interface SharedCalibrationFilePayload {
+  version: number;
+  updatedAtMs: number;
+  calibration: Record<string, unknown> | null;
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -210,12 +221,47 @@ app.use(
     credentials: true,
   })
 );
+app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "sea-war-socket",
     timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/calibration", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    version: sharedCalibrationPayload.version,
+    updatedAtMs: sharedCalibrationPayload.updatedAtMs,
+    calibration: sharedCalibrationPayload.calibration,
+  });
+});
+
+app.post("/calibration", (req, res) => {
+  const candidate = req.body?.calibration;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    res.status(400).json({
+      ok: false,
+      error: "Invalid payload. Expected { calibration: object }",
+    });
+    return;
+  }
+
+  sharedCalibrationPayload = {
+    version: 1,
+    updatedAtMs: Date.now(),
+    calibration: candidate as Record<string, unknown>,
+  };
+  persistSharedCalibrationToDisk();
+
+  res.json({
+    ok: true,
+    version: sharedCalibrationPayload.version,
+    updatedAtMs: sharedCalibrationPayload.updatedAtMs,
   });
 });
 
@@ -234,6 +280,11 @@ const rooms = new Map<string, RoomState>();
 const socketToRoom = new Map<string, string>();
 const socketProfiles = new Map<string, PlayerProfile>();
 const playerStats = new Map<string, PlayerStat>();
+let sharedCalibrationPayload: SharedCalibrationFilePayload = {
+  version: 1,
+  updatedAtMs: 0,
+  calibration: null,
+};
 
 function normalizePersistenceMode(raw: string): StatsPersistenceMode {
   if (raw === "supabase") return "supabase";
@@ -270,6 +321,42 @@ function ensureStatsDirectory(): void {
   const dirPath = path.dirname(STATS_FILE_PATH);
   if (!existsSync(dirPath)) {
     mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function loadSharedCalibrationFromDisk(): void {
+  try {
+    if (!existsSync(SHARED_CALIBRATION_FILE_PATH)) return;
+    const raw = readFileSync(SHARED_CALIBRATION_FILE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<SharedCalibrationFilePayload>;
+    if (!parsed || typeof parsed !== "object") return;
+    const calibration =
+      parsed.calibration && typeof parsed.calibration === "object" && !Array.isArray(parsed.calibration)
+        ? (parsed.calibration as Record<string, unknown>)
+        : null;
+    sharedCalibrationPayload = {
+      version: typeof parsed.version === "number" ? parsed.version : 1,
+      updatedAtMs:
+        typeof parsed.updatedAtMs === "number" ? parsed.updatedAtMs : Date.now(),
+      calibration,
+    };
+  } catch {
+    // Ignore malformed file and keep defaults.
+  }
+}
+
+function persistSharedCalibrationToDisk(): void {
+  try {
+    ensureStatsDirectory();
+    const tempPath = `${SHARED_CALIBRATION_FILE_PATH}.tmp`;
+    writeFileSync(
+      tempPath,
+      JSON.stringify(sharedCalibrationPayload, null, 2),
+      "utf8"
+    );
+    renameSync(tempPath, SHARED_CALIBRATION_FILE_PATH);
+  } catch {
+    // Ignore write errors to avoid impacting gameplay.
   }
 }
 
@@ -1395,6 +1482,7 @@ function leaveRoomBySocketId(socketId: string, reason?: string): void {
   }
 }
 
+loadSharedCalibrationFromDisk();
 bootstrapStatsPersistence();
 
 setInterval(() => {

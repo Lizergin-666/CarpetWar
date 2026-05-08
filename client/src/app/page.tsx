@@ -411,6 +411,21 @@ type ShipVisualCalibrationMap = Record<
   { horizontal: ShipCursorCalibration; vertical: ShipCursorCalibration }
 >;
 
+interface SharedCalibrationSnapshot {
+  uiCalibration: UiCalibrationConfig;
+  shipVisualCalibration: ShipVisualCalibrationMap;
+  placementUiCalibration: PlacementUiCalibration;
+  hitMarkerCalibrationMap: HitMarkerCalibrationMap;
+  forkVariantCalibrationMap: ForkVariantCalibrationMap;
+}
+
+interface SharedCalibrationResponse {
+  ok?: boolean;
+  version?: number;
+  updatedAtMs?: number;
+  calibration?: unknown;
+}
+
 const DEFAULT_UI_CALIBRATION: UiCalibrationConfig = {
   startButton: { leftPct: 41, topPct: 84.9, widthPct: 18, heightPct: 11.4 },
   onlineButton: { leftPct: 8.5, topPct: 41.4, widthPct: 83, heightPct: 15.4 },
@@ -891,6 +906,173 @@ function readStoredForkVariantCalibrationMap(): ForkVariantCalibrationMap {
 function writeStoredForkVariantCalibrationMap(map: ForkVariantCalibrationMap): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(FORK_VARIANT_CALIBRATION_STORAGE_KEY, JSON.stringify(map));
+}
+
+function normalizeUiCalibrationCandidate(candidate: unknown): UiCalibrationConfig {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return cloneUiCalibration(DEFAULT_UI_CALIBRATION);
+  }
+  const parsed = candidate as Partial<UiCalibrationConfig>;
+  const merged: UiCalibrationConfig = {
+    startButton: { ...DEFAULT_UI_CALIBRATION.startButton, ...parsed.startButton },
+    onlineButton: { ...DEFAULT_UI_CALIBRATION.onlineButton, ...parsed.onlineButton },
+    offlineButton: { ...DEFAULT_UI_CALIBRATION.offlineButton, ...parsed.offlineButton },
+    babyButton: { ...DEFAULT_UI_CALIBRATION.babyButton, ...parsed.babyButton },
+    manButton: { ...DEFAULT_UI_CALIBRATION.manButton, ...parsed.manButton },
+    nightmareButton: { ...DEFAULT_UI_CALIBRATION.nightmareButton, ...parsed.nightmareButton },
+    soundOnButton: { ...DEFAULT_UI_CALIBRATION.soundOnButton, ...parsed.soundOnButton },
+    soundButton: { ...DEFAULT_UI_CALIBRATION.soundButton, ...parsed.soundButton },
+    statButton: { ...DEFAULT_UI_CALIBRATION.statButton, ...parsed.statButton },
+    leaderButton: { ...DEFAULT_UI_CALIBRATION.leaderButton, ...parsed.leaderButton },
+    loginButton: { ...DEFAULT_UI_CALIBRATION.loginButton, ...parsed.loginButton },
+    shipCursorHorizontal: {
+      ...DEFAULT_UI_CALIBRATION.shipCursorHorizontal,
+      ...parsed.shipCursorHorizontal,
+    },
+    shipCursorVertical: {
+      ...DEFAULT_UI_CALIBRATION.shipCursorVertical,
+      ...parsed.shipCursorVertical,
+    },
+  };
+  return normalizeUiCalibration(merged);
+}
+
+function normalizeShipVisualCalibrationCandidate(candidate: unknown): ShipVisualCalibrationMap {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return createDefaultShipVisualCalibrationMap();
+  }
+  const parsed = candidate as Record<
+    string,
+    | { horizontal?: Partial<ShipCursorCalibration>; vertical?: Partial<ShipCursorCalibration> }
+    | Partial<ShipCursorCalibration>
+    | undefined
+  >;
+  const defaults = createDefaultShipVisualCalibrationMap();
+  const merged = Object.fromEntries(
+    ONLINE_PLACEMENT_FLEET.map((length) => {
+      const item = parsed[String(length)];
+      const hasNested =
+        Boolean(item) &&
+        typeof item === "object" &&
+        ("horizontal" in item || "vertical" in item);
+      const legacyFlat = hasNested ? undefined : (item as Partial<ShipCursorCalibration> | undefined);
+      return [
+        length,
+        {
+          horizontal: {
+            ...defaults[length].horizontal,
+            ...(hasNested
+              ? (item as { horizontal?: Partial<ShipCursorCalibration> }).horizontal ?? {}
+              : legacyFlat ?? {}),
+          },
+          vertical: {
+            ...defaults[length].vertical,
+            ...(hasNested
+              ? (item as { vertical?: Partial<ShipCursorCalibration> }).vertical ?? {}
+              : legacyFlat ?? {}),
+          },
+        },
+      ];
+    })
+  ) as ShipVisualCalibrationMap;
+  return normalizeShipVisualCalibrationMap(merged);
+}
+
+function normalizePlacementUiCalibrationCandidate(candidate: unknown): PlacementUiCalibration {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return { ...DEFAULT_PLACEMENT_UI_CALIBRATION };
+  }
+  return normalizePlacementUiCalibration({
+    ...DEFAULT_PLACEMENT_UI_CALIBRATION,
+    ...(candidate as Partial<PlacementUiCalibration>),
+  });
+}
+
+function normalizeHitMarkerCalibrationMapCandidate(candidate: unknown): HitMarkerCalibrationMap {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return createDefaultHitMarkerCalibrationMap();
+  }
+  const parsed = candidate as Record<string, Partial<HitMarkerCalibration> | undefined>;
+  const defaults = createDefaultHitMarkerCalibrationMap();
+  return Object.fromEntries(
+    HIT_MARKER_IDS.map((id) => [
+      id,
+      normalizeHitMarkerCalibration({
+        ...defaults[id],
+        ...(parsed[id] ?? {}),
+      }),
+    ])
+  ) as HitMarkerCalibrationMap;
+}
+
+function normalizeForkVariantCalibrationMapCandidate(candidate: unknown): ForkVariantCalibrationMap {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return createDefaultForkVariantCalibrationMap();
+  }
+  const parsed = candidate as Record<string, Partial<ForkVariantCalibration> | undefined>;
+  const defaults = createDefaultForkVariantCalibrationMap();
+  return Object.fromEntries(
+    FORK_VARIANT_IDS.map((id) => [
+      id,
+      normalizeForkVariantCalibration({
+        ...defaults[id],
+        ...(parsed[id] ?? {}),
+        href: resolveForkHref(String((parsed[id]?.href ?? defaults[id].href) ?? "")),
+      }),
+    ])
+  ) as ForkVariantCalibrationMap;
+}
+
+function normalizeSharedCalibrationSnapshot(candidate: unknown): SharedCalibrationSnapshot | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return null;
+  }
+  const parsed = candidate as Partial<Record<keyof SharedCalibrationSnapshot, unknown>>;
+  return {
+    uiCalibration: normalizeUiCalibrationCandidate(parsed.uiCalibration),
+    shipVisualCalibration: normalizeShipVisualCalibrationCandidate(
+      parsed.shipVisualCalibration
+    ),
+    placementUiCalibration: normalizePlacementUiCalibrationCandidate(
+      parsed.placementUiCalibration
+    ),
+    hitMarkerCalibrationMap: normalizeHitMarkerCalibrationMapCandidate(
+      parsed.hitMarkerCalibrationMap
+    ),
+    forkVariantCalibrationMap: normalizeForkVariantCalibrationMapCandidate(
+      parsed.forkVariantCalibrationMap
+    ),
+  };
+}
+
+function buildSharedCalibrationSnapshot(
+  values: SharedCalibrationSnapshot
+): SharedCalibrationSnapshot {
+  return {
+    uiCalibration: normalizeUiCalibration(values.uiCalibration),
+    shipVisualCalibration: normalizeShipVisualCalibrationMap(values.shipVisualCalibration),
+    placementUiCalibration: normalizePlacementUiCalibration(values.placementUiCalibration),
+    hitMarkerCalibrationMap: normalizeHitMarkerCalibrationMapCandidate(
+      values.hitMarkerCalibrationMap
+    ),
+    forkVariantCalibrationMap: normalizeForkVariantCalibrationMapCandidate(
+      values.forkVariantCalibrationMap
+    ),
+  };
+}
+
+function createDefaultSharedCalibrationSnapshot(): SharedCalibrationSnapshot {
+  return {
+    uiCalibration: normalizeUiCalibration(cloneUiCalibration(DEFAULT_UI_CALIBRATION)),
+    shipVisualCalibration: createDefaultShipVisualCalibrationMap(),
+    placementUiCalibration: { ...DEFAULT_PLACEMENT_UI_CALIBRATION },
+    hitMarkerCalibrationMap: createDefaultHitMarkerCalibrationMap(),
+    forkVariantCalibrationMap: createDefaultForkVariantCalibrationMap(),
+  };
+}
+
+function serializeSharedCalibrationSnapshot(snapshot: SharedCalibrationSnapshot): string {
+  return JSON.stringify(buildSharedCalibrationSnapshot(snapshot));
 }
 
 function areShipCursorCalibrationsEqual(
@@ -1931,6 +2113,7 @@ export default function Home() {
   const lastPlacementSignatureRef = useRef<string>("");
   const boardFrameRef = useRef<HTMLDivElement | null>(null);
   const turnSwapTimersRef = useRef<number[]>([]);
+  const calibrationSyncAttemptedRef = useRef<boolean>(false);
   const [markerSample, setMarkerSample] = useState<{
     centerX: number;
     centerY: number;
@@ -2124,6 +2307,85 @@ export default function Home() {
       };
     }
   }, [boardFrameScale]);
+
+  useEffect(() => {
+    if (calibrationSyncAttemptedRef.current) return;
+    calibrationSyncAttemptedRef.current = true;
+
+    let cancelled = false;
+    const endpoint = `${socketUrl.replace(/\/+$/, "")}/calibration`;
+    const localSnapshot = buildSharedCalibrationSnapshot({
+      uiCalibration,
+      shipVisualCalibration,
+      placementUiCalibration,
+      hitMarkerCalibrationMap,
+      forkVariantCalibrationMap,
+    });
+    const localHasCustomCalibration =
+      serializeSharedCalibrationSnapshot(localSnapshot) !==
+      serializeSharedCalibrationSnapshot(createDefaultSharedCalibrationSnapshot());
+
+    const applySnapshot = (snapshot: SharedCalibrationSnapshot): void => {
+      if (cancelled) return;
+      setUiCalibration(snapshot.uiCalibration);
+      setUiCalibrationDraft(cloneUiCalibration(snapshot.uiCalibration));
+      setShipVisualCalibration(snapshot.shipVisualCalibration);
+      setShipVisualCalibrationDraftSync(cloneShipVisualCalibrationMap(snapshot.shipVisualCalibration));
+      setPlacementUiCalibration(snapshot.placementUiCalibration);
+      setHitMarkerCalibrationMap(snapshot.hitMarkerCalibrationMap);
+      setForkVariantCalibrationMap(snapshot.forkVariantCalibrationMap);
+      try {
+        localStorage.setItem(UI_CALIBRATION_STORAGE_KEY, JSON.stringify(snapshot.uiCalibration));
+        writeStoredShipVisualCalibration(snapshot.shipVisualCalibration);
+        writeStoredPlacementUiCalibration(snapshot.placementUiCalibration);
+        writeStoredHitMarkerCalibrationMap(snapshot.hitMarkerCalibrationMap);
+        writeStoredForkVariantCalibrationMap(snapshot.forkVariantCalibrationMap);
+      } catch {
+        // Ignore storage failures.
+      }
+    };
+
+    const syncSharedCalibration = async (): Promise<void> => {
+      try {
+        const response = await fetch(endpoint, { cache: "no-store" });
+        if (response.ok) {
+          const payload = (await response.json()) as SharedCalibrationResponse;
+          const sharedSnapshot = normalizeSharedCalibrationSnapshot(payload.calibration);
+          if (sharedSnapshot) {
+            applySnapshot(sharedSnapshot);
+            return;
+          }
+        }
+      } catch {
+        // Ignore GET failures and fallback to local snapshot seeding.
+      }
+
+      if (!localHasCustomCalibration) return;
+
+      try {
+        await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ calibration: localSnapshot }),
+        });
+      } catch {
+        // Ignore POST failures; local calibration still works for this browser.
+      }
+    };
+
+    void syncSharedCalibration();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    forkVariantCalibrationMap,
+    hitMarkerCalibrationMap,
+    placementUiCalibration,
+    shipVisualCalibration,
+    socketUrl,
+    uiCalibration,
+  ]);
 
   useEffect(() => {
     const socket: Socket = io(socketUrl, {
