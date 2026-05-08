@@ -208,10 +208,10 @@ const DEFAULT_BOUNDARY: BoundaryControl = {
     { x: 817.9916811802069, y: 246.3070608001967 },
     { x: 875.9057473619506, y: 241.55997377299985 },
     { x: 928.1233480176212, y: 236.81288674580298 },
-    { x: 982.239811927581, y: 233.96462719260123 },
+    { x: 983.189199608826, y: 232.06578672878675 },
   ],
   right: [
-    { x: 982.239811927581, y: 233.96462719260123 },
+    { x: 983.189199608826, y: 232.06578672878675 },
     { x: 991.733879725438, y: 274.7895829633778 },
     { x: 1001.2279889355599, y: 321.311035829907 },
     { x: 1013.5703309087183, y: 367.83248869643614 },
@@ -286,10 +286,28 @@ const SPRITE_TEMPLATE_BY_ID: Record<SpriteTemplateId, SpriteTemplate> = {
 };
 
 const DEFAULT_SPRITE_TRANSFORMS: SpriteTransformMap = {
-  "ship-5-sunk": { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotationDeg: 0 },
-  "ship-2-idle": { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotationDeg: 0 },
-  "ship-2-hit1": { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotationDeg: 0 },
-  "ship-2-hit2": { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotationDeg: 0 },
+  "ship-5-sunk": {
+    offsetX: 55.250681198910115,
+    offsetY: -6.898366606170555,
+    scaleX: 3.15,
+    scaleY: 3.5,
+    rotationDeg: 3,
+  },
+  "ship-2-idle": {
+    offsetX: 0,
+    offsetY: -6.898366606170555,
+    scaleX: 1.42,
+    scaleY: 3.39,
+    rotationDeg: 0,
+  },
+  "ship-2-hit1": { offsetX: 0, offsetY: 0, scaleX: 1.42, scaleY: 3.43, rotationDeg: 0 },
+  "ship-2-hit2": {
+    offsetX: 0,
+    offsetY: -7.883847549909262,
+    scaleX: 1.42,
+    scaleY: 1.88,
+    rotationDeg: 0,
+  },
 };
 
 export type BoardMark = "unknown" | "miss" | "hit";

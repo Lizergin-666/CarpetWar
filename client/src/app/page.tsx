@@ -432,17 +432,17 @@ interface SharedCalibrationResponse {
 }
 
 const DEFAULT_UI_CALIBRATION: UiCalibrationConfig = {
-  startButton: { leftPct: 41, topPct: 84.9, widthPct: 18, heightPct: 11.4 },
-  onlineButton: { leftPct: 8.5, topPct: 41.4, widthPct: 83, heightPct: 15.4 },
-  offlineButton: { leftPct: 8.5, topPct: 59.1, widthPct: 83, heightPct: 15.4 },
-  babyButton: { leftPct: 7.6, topPct: 37.9, widthPct: 84.8, heightPct: 15.6 },
-  manButton: { leftPct: 7.6, topPct: 56.4, widthPct: 84.8, heightPct: 15.6 },
-  nightmareButton: { leftPct: 7.6, topPct: 74.8, widthPct: 84.8, heightPct: 15.6 },
-  soundOnButton: { leftPct: 11.1, topPct: 20.4, widthPct: 77.8, heightPct: 13.2 },
-  soundButton: { leftPct: 11.1, topPct: 20.4, widthPct: 77.8, heightPct: 13.2 },
-  statButton: { leftPct: 11.1, topPct: 38.2, widthPct: 77.8, heightPct: 13.2 },
-  leaderButton: { leftPct: 11.1, topPct: 55.9, widthPct: 77.8, heightPct: 13.2 },
-  loginButton: { leftPct: 11.1, topPct: 73.6, widthPct: 77.8, heightPct: 13.2 },
+  startButton: { leftPct: 40.55, topPct: 88.5, widthPct: 18, heightPct: 11.4 },
+  onlineButton: { leftPct: 10.66, topPct: 36.7, widthPct: 81.54, heightPct: 14.76 },
+  offlineButton: { leftPct: 12.55, topPct: 51.33, widthPct: 76.29, heightPct: 19.31 },
+  babyButton: { leftPct: 8, topPct: 37.12, widthPct: 85.46, heightPct: 14.55 },
+  manButton: { leftPct: 7.6, topPct: 53.22, widthPct: 87.35, heightPct: 14.97 },
+  nightmareButton: { leftPct: 8.35, topPct: 70.09, widthPct: 84.8, heightPct: 14.55 },
+  soundOnButton: { leftPct: 8.35, topPct: 14.51, widthPct: 82.73, heightPct: 23.44 },
+  soundButton: { leftPct: 2.26, topPct: 8, widthPct: 94.98, heightPct: 35.48 },
+  statButton: { leftPct: 8.77, topPct: 32.15, widthPct: 83.36, heightPct: 20.99 },
+  leaderButton: { leftPct: 3.03, topPct: 52.45, widthPct: 94.98, heightPct: 15.81 },
+  loginButton: { leftPct: 8.77, topPct: 64.7, widthPct: 82.45, heightPct: 23.65 },
   shipCursorHorizontal: {
     deckSizePx: 44,
     thicknessPx: 42,
@@ -472,14 +472,14 @@ const DEFAULT_UI_CALIBRATION: UiCalibrationConfig = {
 };
 
 const DEFAULT_PLACEMENT_UI_CALIBRATION: PlacementUiCalibration = {
-  panelLeftPct: 1.6,
-  panelTopPct: 20.3,
-  panelWidthPct: 31.6,
-  panelGapPx: 6,
-  badgeOffsetXPx: 0,
+  panelLeftPct: -6.4,
+  panelTopPct: 26.3,
+  panelWidthPct: 63.2,
+  panelGapPx: -17.5,
+  badgeOffsetXPx: -20,
   badgeOffsetYPx: 0,
   badgeScale: 1,
-  shipSlotScale: 2.15,
+  shipSlotScale: 3.2,
 };
 
 const DEFAULT_HIT_MARKER_CALIBRATION: HitMarkerCalibration = {
@@ -501,13 +501,13 @@ const LEGACY_MISSING_FORK_PATHS = new Set([
 const DEFAULT_FORK_VARIANT_CALIBRATION: ForkVariantCalibration = {
   href: DEFAULT_FORK_IMAGE_HREF,
   enabled: true,
-  scale: 1,
-  offsetXPx: 0,
-  offsetYPx: 0,
+  scale: 0.81,
+  offsetXPx: 8.331774577475803,
+  offsetYPx: -1.388667547911596,
   opacity: 1,
-  rotationDeg: 0,
-  centerXPct: 50,
-  centerYPct: 83.3333,
+  rotationDeg: -4,
+  centerXPct: 48.74166029308653,
+  centerYPct: 86.66708582407009,
 };
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -591,9 +591,21 @@ function normalizeHitMarkerCalibration(config: HitMarkerCalibration): HitMarkerC
 }
 
 function createDefaultHitMarkerCalibrationMap(): HitMarkerCalibrationMap {
-  return Object.fromEntries(
-    HIT_MARKER_IDS.map((id) => [id, { ...DEFAULT_HIT_MARKER_CALIBRATION }])
-  ) as HitMarkerCalibrationMap;
+  return {
+    "hit-1": {
+      scale: 0.8552475894852128,
+      offsetXPx: -111.88614970524017,
+      offsetYPx: 120,
+      opacity: 0.8,
+      centerXPct: 50.11711120605469,
+      centerYPct: 46.27602895100911,
+    },
+    "hit-2": { scale: 0.69, offsetXPx: -102, offsetYPx: 102, opacity: 0.8, centerXPct: 50, centerYPct: 50 },
+    "hit-3": { scale: 0.69, offsetXPx: 0, offsetYPx: 0, opacity: 0.8, centerXPct: 50, centerYPct: 50 },
+    "hit-4": { scale: 0.84, offsetXPx: 0, offsetYPx: 0, opacity: 0.8, centerXPct: 50, centerYPct: 50 },
+    "hit-5": { scale: 0.86, offsetXPx: 0, offsetYPx: 0, opacity: 0.8, centerXPct: 50, centerYPct: 50 },
+    "hit-6": { scale: 0.71, offsetXPx: 0, offsetYPx: 0, opacity: 0.8, centerXPct: 50, centerYPct: 50 },
+  };
 }
 
 function normalizeForkVariantCalibration(
@@ -622,16 +634,34 @@ function createDefaultForkVariantCalibrationMap(): ForkVariantCalibrationMap {
     "fork-2": {
       ...DEFAULT_FORK_VARIANT_CALIBRATION,
       href: DEFAULT_FORK_IMAGE_HREF,
+      scale: 1,
+      offsetXPx: 0,
+      offsetYPx: 0,
+      rotationDeg: 9,
+      centerXPct: 40.241447655684176,
+      centerYPct: 85.96293776052714,
       enabled: false,
     },
     "fork-3": {
       ...DEFAULT_FORK_VARIANT_CALIBRATION,
       href: DEFAULT_FORK_IMAGE_HREF,
+      scale: 1,
+      offsetXPx: 0,
+      offsetYPx: 0,
+      rotationDeg: -15,
+      centerXPct: 58.05881882847562,
+      centerYPct: 87.83845051555781,
       enabled: false,
     },
     "fork-4": {
       ...DEFAULT_FORK_VARIANT_CALIBRATION,
       href: DEFAULT_FORK_IMAGE_HREF,
+      scale: 1,
+      offsetXPx: 5,
+      offsetYPx: 1,
+      rotationDeg: 4,
+      centerXPct: 46.91122844354062,
+      centerYPct: 87.2992577693186,
       enabled: false,
     },
   };
@@ -685,19 +715,24 @@ function normalizeUiCalibration(config: UiCalibrationConfig): UiCalibrationConfi
 }
 
 function createDefaultShipVisualCalibrationMap(): ShipVisualCalibrationMap {
-  return Object.fromEntries(
-    ONLINE_PLACEMENT_FLEET.map((length) => [
-      length,
-      {
-        horizontal: normalizeShipCursorCalibration({
-          ...DEFAULT_UI_CALIBRATION.shipCursorHorizontal,
-        }),
-        vertical: normalizeShipCursorCalibration({
-          ...DEFAULT_UI_CALIBRATION.shipCursorVertical,
-        }),
-      },
-    ])
-  ) as ShipVisualCalibrationMap;
+  return {
+    2: {
+      horizontal: normalizeShipCursorCalibration({ deckSizePx: 135.6666259765625, thicknessPx: 253.11114501953125, minLengthPx: 271.333251953125, anchorXPct: 50, anchorYPct: 50, offsetXPx: -37.80597497016347, offsetYPx: -15.8540601882453, rotationDeg: 2.000006103515625, shadowAngleDeg: 104, shadowOpacity: 0.43, shadowBlurPx: 5 }),
+      vertical: normalizeShipCursorCalibration({ deckSizePx: 124.49008623347466, thicknessPx: 259.0794432512394, minLengthPx: 248.9801724669493, anchorXPct: 18, anchorYPct: 42, offsetXPx: -81.70980453399982, offsetYPx: -25.610533749709703, rotationDeg: -6.9999938964843755, shadowAngleDeg: 132, shadowOpacity: 0.36, shadowBlurPx: 3.2927771685292764 }),
+    },
+    3: {
+      horizontal: normalizeShipCursorCalibration({ deckSizePx: 150.75858117855165, thicknessPx: 255.55554199218753, minLengthPx: 452.27574353565495, anchorXPct: 18, anchorYPct: 42, offsetXPx: -166.7258663059364, offsetYPx: -192.68843278345267, rotationDeg: -6.999993896484372, shadowAngleDeg: 111, shadowOpacity: 0.43, shadowBlurPx: 4 }),
+      vertical: normalizeShipCursorCalibration({ deckSizePx: 124.49010856404898, thicknessPx: 202.98017246694928, minLengthPx: 373.47032569214696, anchorXPct: 18, anchorYPct: 42, offsetXPx: -76.83133328223714, offsetYPx: -110.97882326805505, rotationDeg: -8.50001220703125, shadowAngleDeg: 132, shadowOpacity: 0.34, shadowBlurPx: 11.999999999999998 }),
+    },
+    4: {
+      horizontal: normalizeShipCursorCalibration({ deckSizePx: 106.51103626083048, thicknessPx: 296.3934064250502, minLengthPx: 426.0441450433219, anchorXPct: 18, anchorYPct: 42, offsetXPx: -190.08146245205998, offsetYPx: -185.69360145442243, rotationDeg: -6.999993896484378, shadowAngleDeg: 117, shadowOpacity: 0.76, shadowBlurPx: 5.999999999999999 }),
+      vertical: normalizeShipCursorCalibration({ deckSizePx: 88.6141482214377, thicknessPx: 268.78473124649554, minLengthPx: 354.4565928857508, anchorXPct: 18, anchorYPct: 42, offsetXPx: -95.37543746315455, offsetYPx: -161.57879550727293, rotationDeg: -5.000015258789064, shadowAngleDeg: 125, shadowOpacity: 0.56, shadowBlurPx: 2.9999999999999996 }),
+    },
+    5: {
+      horizontal: normalizeShipCursorCalibration({ deckSizePx: 101.19052563892892, thicknessPx: 364.59022684885605, minLengthPx: 505.9526281946446, anchorXPct: 18, anchorYPct: 42, offsetXPx: -279.05193622740285, offsetYPx: -332.0304470987609, rotationDeg: -5.299981689453139, shadowAngleDeg: 132, shadowOpacity: 0.87, shadowBlurPx: 8.199765309979824 }),
+      vertical: normalizeShipCursorCalibration({ deckSizePx: 87.0305532157421, thicknessPx: 285.85850973526595, minLengthPx: 435.1527660787105, anchorXPct: 18, anchorYPct: 42, offsetXPx: -29.520162059460997, offsetYPx: -176.1627291679376, rotationDeg: -9, shadowAngleDeg: 118, shadowOpacity: 0.5, shadowBlurPx: 6.585554337058553 }),
+    },
+  } as ShipVisualCalibrationMap;
 }
 
 function normalizeShipVisualCalibrationMap(
