@@ -55,6 +55,11 @@ const SHARED_CALIBRATION_FILE_PATH = path.resolve(
   "data",
   "shared-calibration.json"
 );
+const SHARED_CALIBRATION_SEED_FILE_PATH = path.resolve(
+  process.cwd(),
+  "data",
+  "shared-calibration.seed.json"
+);
 const ROOM_FLEET_SORTED_ASC = [...ROOM_FLEET].sort((a, b) => a - b);
 const STATS_PERSISTENCE_MODE = String(
   process.env.STATS_PERSISTENCE_MODE ?? "local"
@@ -329,21 +334,27 @@ function ensureStatsDirectory(): void {
 }
 
 function loadSharedCalibrationFromDisk(): void {
+  const candidates = [SHARED_CALIBRATION_FILE_PATH, SHARED_CALIBRATION_SEED_FILE_PATH];
   try {
-    if (!existsSync(SHARED_CALIBRATION_FILE_PATH)) return;
-    const raw = readFileSync(SHARED_CALIBRATION_FILE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<SharedCalibrationFilePayload>;
-    if (!parsed || typeof parsed !== "object") return;
-    const calibration =
-      parsed.calibration && typeof parsed.calibration === "object" && !Array.isArray(parsed.calibration)
-        ? (parsed.calibration as Record<string, unknown>)
-        : null;
-    sharedCalibrationPayload = {
-      version: typeof parsed.version === "number" ? parsed.version : 1,
-      updatedAtMs:
-        typeof parsed.updatedAtMs === "number" ? parsed.updatedAtMs : Date.now(),
-      calibration,
-    };
+    for (const filePath of candidates) {
+      if (!existsSync(filePath)) continue;
+      const raw = readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw) as Partial<SharedCalibrationFilePayload>;
+      if (!parsed || typeof parsed !== "object") continue;
+      const calibration =
+        parsed.calibration &&
+        typeof parsed.calibration === "object" &&
+        !Array.isArray(parsed.calibration)
+          ? (parsed.calibration as Record<string, unknown>)
+          : null;
+      sharedCalibrationPayload = {
+        version: typeof parsed.version === "number" ? parsed.version : 1,
+        updatedAtMs:
+          typeof parsed.updatedAtMs === "number" ? parsed.updatedAtMs : Date.now(),
+        calibration,
+      };
+      return;
+    }
   } catch {
     // Ignore malformed file and keep defaults.
   }

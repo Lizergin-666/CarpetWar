@@ -9,6 +9,7 @@ RUN npm install -g pnpm
 RUN npm install --include=dev
 
 COPY src ./src
+COPY data ./data
 
 EXPOSE 4000
 
