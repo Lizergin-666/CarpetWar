@@ -2417,7 +2417,7 @@ export default function Home() {
       }
     };
 
-    const syncSharedCalibration = async (): Promise<void> => {
+    const syncSharedCalibration = async (): Promise<boolean> => {
       try {
         const response = await fetch(endpoint, { cache: "no-store" });
         if (response.ok) {
@@ -2442,30 +2442,46 @@ export default function Home() {
                 body: JSON.stringify({ calibration: mergedSnapshot }),
               });
             }
-            return;
+            return true;
           }
         }
       } catch {
-        // Ignore GET failures and fallback to local snapshot seeding.
+        // Ignore GET failures and retry.
       }
 
-      if (!localHasCustomCalibration) return;
+      if (!localHasCustomCalibration) return false;
 
       try {
-        await fetch(endpoint, {
+        const post = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ calibration: localSnapshot }),
         });
+        return post.ok;
       } catch {
-        // Ignore POST failures; local calibration still works for this browser.
+        return false;
       }
     };
 
-    void syncSharedCalibration();
+    let retryTimer: number | null = null;
+    let attempts = 0;
+    const maxAttempts = 30;
+    const attemptSync = (): void => {
+      if (cancelled) return;
+      attempts += 1;
+      void syncSharedCalibration().then((done) => {
+        if (cancelled || done) return;
+        if (attempts >= maxAttempts) return;
+        retryTimer = window.setTimeout(attemptSync, 2000);
+      });
+    };
+    attemptSync();
 
     return () => {
       cancelled = true;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
     };
   }, [
     forkVariantCalibrationMap,
