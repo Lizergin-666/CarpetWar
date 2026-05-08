@@ -15,7 +15,22 @@ const IMAGE_WIDTH = 1448;
 const IMAGE_HEIGHT = 1086;
 const GRID_SIZE = 10;
 const EDGE_POINT_COUNT = GRID_SIZE + 1;
-const HIT_NAIL_IMAGE_HREF = "/sprites/hit-nail.png";
+const HIT_MARKER_VARIANTS = [
+  { id: "hit-1", href: "/sprites/hit-variants/hit-1.png" },
+  { id: "hit-2", href: "/sprites/hit-variants/hit-2.png" },
+  { id: "hit-3", href: "/sprites/hit-variants/hit-3.png" },
+  { id: "hit-4", href: "/sprites/hit-variants/hit-4.png" },
+  { id: "hit-5", href: "/sprites/hit-variants/hit-5.png" },
+  { id: "hit-6", href: "/sprites/hit-variants/hit-6.png" },
+] as const;
+const HIT_FORK_IMAGE_HREF = "/sprites/fork.png";
+const MISS_MARKER_SIZE_MULTIPLIER = 2;
+const FORK_MARKER_SIZE_MULTIPLIER = 3.8;
+const MARKER_LAYER_OPACITY = 0.8;
+const FORK_TARGET_CENTER_X_PCT = 50;
+const FORK_TARGET_CENTER_Y_PCT = 83.3333; // center of cell 8 in a 3x3 grid
+const FORK_TARGET_CENTER_Y_RATIO = 5 / 6;
+const FORK_WOBBLE_MS = 520;
 const SPRITE_TRANSFORM_STORAGE_KEY = "sea-war.sprite-transform-map.v1";
 const SHOT_LEFT_TRAVEL_MS = 2000;
 const SHOT_RIGHT_DELAY_MS = 200;
@@ -40,6 +55,11 @@ const HIT_SPLASH_FRAMES = Array.from(
   (_, index) => `/sprites/hit-splash-frames/frame-${String(index).padStart(2, "0")}.png`
 );
 const HIT_SPLASH_DURATION_MS = HIT_SPLASH_FRAME_MS * HIT_SPLASH_FRAMES.length;
+const LEGACY_MISSING_FORK_PATHS = new Set([
+  "/sprites/fork-2.png",
+  "/sprites/fork-3.png",
+  "/sprites/fork-4.png",
+]);
 
 type EdgeKey = "top" | "right" | "bottom" | "left";
 type SpriteTemplateId =
@@ -137,6 +157,24 @@ interface PlacementHighlightCell {
   row: number;
   col: number;
   valid: boolean;
+}
+
+interface MarkerOverlaySpec {
+  key: string;
+  href: string;
+  leftPct: number;
+  topPct: number;
+  widthPct: number;
+  heightPct: number;
+  opacity: number;
+  kind: "miss" | "hit";
+  showContainer: boolean;
+  imageOffsetXPx: number;
+  imageOffsetYPx: number;
+  rotationDeg: number;
+  centerXPct: number;
+  centerYPct: number;
+  anchor: "center" | "bottom-center";
 }
 
 interface ShotSequence {
@@ -278,6 +316,33 @@ interface CarpetBoardProps {
   onPlacementCellHover?: (row: number, col: number, center?: { x: number; y: number }) => void;
   onPlacementLeave?: () => void;
   onPlacementRotate?: () => void;
+  hitMarkerCalibrationMap?: Record<
+    string,
+    {
+      scale?: number;
+      offsetXPx?: number;
+      offsetYPx?: number;
+      opacity?: number;
+      centerXPct?: number;
+      centerYPct?: number;
+    }
+  >;
+  forkVariantCalibrationMap?: Record<
+    string,
+    {
+      href?: string;
+      enabled?: boolean;
+      scale?: number;
+      offsetXPx?: number;
+      offsetYPx?: number;
+      opacity?: number;
+      rotationDeg?: number;
+      centerXPct?: number;
+      centerYPct?: number;
+    }
+  >;
+  showMarkerDebugBoxes?: boolean;
+  onMarkerSampleChange?: (sample: { centerX: number; centerY: number; holeSize: number }) => void;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -533,6 +598,12 @@ function cellKey(row: number, col: number): string {
   return `${row}:${col}`;
 }
 
+function pickHitMarker(row: number, col: number, layer: "attack" | "defense") {
+  const salt = layer === "attack" ? 17 : 43;
+  const index = Math.abs((row + 1) * 131 + (col + 1) * 197 + salt) % HIT_MARKER_VARIANTS.length;
+  return HIT_MARKER_VARIANTS[index];
+}
+
 function collectShipCells(shipGrid: number[][], waterValue: number): Map<number, GridCell[]> {
   const map = new Map<number, GridCell[]>();
   for (let row = 0; row < shipGrid.length; row += 1) {
@@ -660,6 +731,13 @@ function handTopLeftFromAnchor(
   };
 }
 
+function resolveForkHref(href: string): string {
+  const normalized = String(href ?? "").trim();
+  if (!normalized) return HIT_FORK_IMAGE_HREF;
+  if (LEGACY_MISSING_FORK_PATHS.has(normalized)) return HIT_FORK_IMAGE_HREF;
+  return normalized;
+}
+
 function allPerimeterHandles(): PerimeterHandle[] {
   const top = Array.from({ length: EDGE_POINT_COUNT }, (_, index) => ({
     edge: "top" as const,
@@ -728,6 +806,10 @@ export function CarpetBoard({
   onPlacementCellHover,
   onPlacementLeave,
   onPlacementRotate,
+  hitMarkerCalibrationMap = {},
+  forkVariantCalibrationMap = {},
+  showMarkerDebugBoxes = false,
+  onMarkerSampleChange,
 }: CarpetBoardProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const shotTimerIdsRef = useRef<number[]>([]);
@@ -748,8 +830,10 @@ export function CarpetBoard({
   const [activeSpriteDrag, setActiveSpriteDrag] = useState<ActiveSpriteDrag | null>(null);
   const [shotSequence, setShotSequence] = useState<ShotSequence | null>(null);
   const [splashClockMs, setSplashClockMs] = useState<number>(() => Date.now());
+  const [forkWobbleStarts, setForkWobbleStarts] = useState<Record<string, number>>({});
   const [calibrationSource, setCalibrationSource] = useState<CalibrationSource>("default");
   const [calibrationSourceKey, setCalibrationSourceKey] = useState<string | null>(null);
+  const processedHitEffectIdsRef = useRef<Set<string>>(new Set());
 
   const boardBoundary = isCalibrating ? draftBoundary : savedBoundary;
   const canShowCalibration = showSetupUi || showCalibrationControls;
@@ -797,6 +881,75 @@ export function CarpetBoard({
     };
   }, [hitEffects.length]);
 
+  useEffect(() => {
+    if (hitEffects.length === 0) {
+      processedHitEffectIdsRef.current.clear();
+      return;
+    }
+
+    const nowMs = Date.now();
+    const updates: Record<string, number> = {};
+    const processedIds = processedHitEffectIdsRef.current;
+
+    for (const effect of hitEffects) {
+      if (processedIds.has(effect.id)) continue;
+      processedIds.add(effect.id);
+
+      let layer: "attack" | "defense" | null = null;
+      if (
+        effect.id.startsWith("solo-defense-") ||
+        effect.id.startsWith("online-defense-") ||
+        effect.id.startsWith("defense-")
+      ) {
+        layer = "defense";
+      } else if (
+        effect.id.startsWith("solo-attack-") ||
+        effect.id.startsWith("online-attack-") ||
+        effect.id.startsWith("attack-")
+      ) {
+        layer = "attack";
+      } else {
+        const attackMark = attackRadar[effect.row]?.[effect.col] ?? "unknown";
+        const defenseMark = defenseRadar[effect.row]?.[effect.col] ?? "unknown";
+        if (defenseMark === "hit" && attackMark !== "hit") {
+          layer = "defense";
+        } else if (attackMark === "hit" && defenseMark !== "hit") {
+          layer = "attack";
+        } else {
+          layer = "attack";
+        }
+      }
+
+      const markerKey = `${layer}-hit-${effect.row}-${effect.col}`;
+      updates[markerKey] = effect.startedAtMs > 0 ? effect.startedAtMs : nowMs;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      setForkWobbleStarts((prev) => ({ ...prev, ...updates }));
+      setSplashClockMs(nowMs);
+    }
+  }, [attackRadar, defenseRadar, hitEffects]);
+
+  useEffect(() => {
+    if (Object.keys(forkWobbleStarts).length === 0) return;
+    const timer = window.setInterval(() => {
+      const nowMs = Date.now();
+      setForkWobbleStarts((prev) => {
+        const next: Record<string, number> = {};
+        for (const [key, startedAt] of Object.entries(prev)) {
+          if (nowMs - startedAt < FORK_WOBBLE_MS) {
+            next[key] = startedAt;
+          }
+        }
+        return next;
+      });
+      setSplashClockMs(nowMs);
+    }, 50);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [forkWobbleStarts]);
+
   const attackOverlays = useMemo(() => {
     const overlays: ShipOverlay[] = [];
     const coveredCellKeys = new Set<string>();
@@ -839,42 +992,6 @@ export function CarpetBoard({
 
     return { overlays, coveredCellKeys };
   }, [boardBoundary, enemyShipGrid, enemyShipHits, waterValue]);
-
-  const defenseOverlays = useMemo(() => {
-    if (!showDefenseLayer) {
-      return { overlays: [] as ShipOverlay[], coveredCellKeys: new Set<string>() };
-    }
-
-    const overlays: ShipOverlay[] = [];
-    const coveredCellKeys = new Set<string>();
-    const spans = collectHorizontalSpans(shipGrid, waterValue);
-
-    for (const span of spans) {
-      if (span.length !== 2) continue;
-
-      const hits = playerShipHits[span.shipId] ?? 0;
-      const templateId: SpriteTemplateId =
-        hits <= 0 ? "ship-2-idle" : hits >= 2 ? "ship-2-hit2" : "ship-2-hit1";
-
-      const points = spanToPoints(boardBoundary, span);
-      const keys = span.cells.map((cell) => cellKey(cell.row, cell.col));
-      keys.forEach((key) => coveredCellKeys.add(key));
-      overlays.push({
-        key: `defense-${span.shipId}`,
-        templateId,
-        imageHref: SPRITE_TEMPLATE_BY_ID[templateId].imageHref,
-        points,
-        coveredCellKeys: keys,
-      });
-    }
-
-    return { overlays, coveredCellKeys };
-  }, [boardBoundary, playerShipHits, shipGrid, showDefenseLayer, waterValue]);
-
-  const shipOverlays = useMemo(
-    () => [...attackOverlays.overlays, ...defenseOverlays.overlays],
-    [attackOverlays.overlays, defenseOverlays.overlays]
-  );
 
   const previewOverlay = useMemo(() => {
     if (!selectedSpriteId || !draftSpriteTransform) return null;
@@ -1003,13 +1120,8 @@ export function CarpetBoard({
         const corners = cellCorners(boardBoundary, row, col);
         const pointsString = polygonToString(corners);
         const center = centerPoint(boardBoundary, row, col);
-        const holeSize = missMarkSize(corners);
-        const nailWidth = holeSize * 0.62;
-        const nailHeight = nailWidth * 1.8;
 
         const attackMark = attackRadar[row]?.[col] ?? "unknown";
-        const defenseMark = defenseRadar[row]?.[col] ?? "unknown";
-        const hasShip = shipGrid[row]?.[col] !== waterValue;
         const canClick = placementMode
           ? !isCalibrating && !isSpriteEditing && !isShotRunning
           : canShoot &&
@@ -1019,18 +1131,10 @@ export function CarpetBoard({
             !isShotRunning;
 
         const key = cellKey(row, col);
-        const hasAttackOverlay = attackOverlays.coveredCellKeys.has(key);
-        const hasDefenseOverlay = defenseOverlays.coveredCellKeys.has(key);
         const placementHighlight = placementHighlightByCell.get(key);
 
         let layerFill = "rgba(15, 23, 42, 0)";
-        if (defenseMark === "hit") {
-          layerFill = "rgba(220, 38, 38, 0.65)";
-        } else if (defenseMark === "miss") {
-          layerFill = "rgba(226, 232, 240, 0.45)";
-        } else if (showDefenseLayer && hasShip) {
-          layerFill = hasDefenseOverlay ? "rgba(8, 145, 178, 0.08)" : "rgba(8, 145, 178, 0.45)";
-        } else if (canClick) {
+        if (canClick) {
           layerFill = "rgba(8, 145, 178, 0.10)";
         }
         if (placementMode && placementHighlight) {
@@ -1079,54 +1183,6 @@ export function CarpetBoard({
               }}
             />
 
-            {attackMark === "hit" && !hasAttackOverlay && (
-              <image
-                href={HIT_NAIL_IMAGE_HREF}
-                x={center.x - nailWidth / 2}
-                y={center.y - nailHeight}
-                width={nailWidth}
-                height={nailHeight}
-                preserveAspectRatio="xMidYMax meet"
-                opacity={0.98}
-                style={{ pointerEvents: "none" }}
-              />
-            )}
-            {attackMark === "miss" && (
-              <image
-                href="/hole-mark.png"
-                x={center.x - holeSize / 2}
-                y={center.y - holeSize / 2}
-                width={holeSize}
-                height={holeSize}
-                preserveAspectRatio="xMidYMid meet"
-                opacity={0.96}
-                style={{ pointerEvents: "none", mixBlendMode: "multiply" }}
-              />
-            )}
-            {showDefenseLayer && defenseMark === "hit" && (
-              <image
-                href={HIT_NAIL_IMAGE_HREF}
-                x={center.x - nailWidth / 2}
-                y={center.y - nailHeight}
-                width={nailWidth}
-                height={nailHeight}
-                preserveAspectRatio="xMidYMax meet"
-                opacity={0.95}
-                style={{ pointerEvents: "none" }}
-              />
-            )}
-            {showDefenseLayer && defenseMark === "miss" && (
-              <image
-                href="/hole-mark.png"
-                x={center.x - holeSize / 2}
-                y={center.y - holeSize / 2}
-                width={holeSize}
-                height={holeSize}
-                preserveAspectRatio="xMidYMid meet"
-                opacity={0.96}
-                style={{ pointerEvents: "none", mixBlendMode: "multiply" }}
-              />
-            )}
           </g>
         );
       })
@@ -1135,12 +1191,9 @@ export function CarpetBoard({
     attackRadar,
     boardBoundary,
     canShoot,
-    defenseRadar,
-    defenseOverlays.coveredCellKeys,
     isCalibrating,
     isSpriteEditing,
     isShotRunning,
-    attackOverlays.coveredCellKeys,
     enableHandStrike,
     placementMode,
     placementHighlightByCell,
@@ -1152,6 +1205,249 @@ export function CarpetBoard({
     showDefenseLayer,
     waterValue,
   ]);
+
+  const markerOverlays = useMemo(() => {
+    const overlays: MarkerOverlaySpec[] = [];
+    const forkVariants = Object.entries(forkVariantCalibrationMap)
+      .map(([id, raw]) => ({
+        id,
+        href: resolveForkHref(raw.href ?? ""),
+        enabled: raw.enabled !== false,
+        scale: typeof raw.scale === "number" ? raw.scale : 1,
+        offsetXPx: typeof raw.offsetXPx === "number" ? raw.offsetXPx : 0,
+        offsetYPx: typeof raw.offsetYPx === "number" ? raw.offsetYPx : 0,
+        opacity: typeof raw.opacity === "number" ? raw.opacity : 1,
+        rotationDeg: typeof raw.rotationDeg === "number" ? raw.rotationDeg : 0,
+        centerXPct:
+          typeof raw.centerXPct === "number" ? raw.centerXPct : FORK_TARGET_CENTER_X_PCT,
+        centerYPct:
+          typeof raw.centerYPct === "number" ? raw.centerYPct : FORK_TARGET_CENTER_Y_PCT,
+      }))
+      .filter((variant) => variant.enabled && variant.href.trim().length > 0);
+    if (forkVariants.length === 0) {
+      forkVariants.push({
+        id: "fork-default",
+        href: HIT_FORK_IMAGE_HREF,
+        enabled: true,
+        scale: 1,
+        offsetXPx: 0,
+        offsetYPx: 0,
+        opacity: 1,
+        rotationDeg: 0,
+        centerXPct: FORK_TARGET_CENTER_X_PCT,
+        centerYPct: FORK_TARGET_CENTER_Y_PCT,
+      });
+    }
+
+    for (let row = 0; row < GRID_SIZE; row += 1) {
+      for (let col = 0; col < GRID_SIZE; col += 1) {
+        const corners = cellCorners(boardBoundary, row, col);
+        const center = centerPoint(boardBoundary, row, col);
+        const holeSize = missMarkSize(corners);
+        const baseMissSize = holeSize * MISS_MARKER_SIZE_MULTIPLIER;
+        const forkSize = holeSize * FORK_MARKER_SIZE_MULTIPLIER;
+
+        const attackMark = attackRadar[row]?.[col] ?? "unknown";
+        const defenseMark = defenseRadar[row]?.[col] ?? "unknown";
+        const attackMissMarker = pickHitMarker(row, col, "attack");
+        const defenseMissMarker = pickHitMarker(row, col, "defense");
+        const attackMissCalibRaw = hitMarkerCalibrationMap[attackMissMarker.id] ?? {
+          scale: 1,
+          offsetXPx: 0,
+          offsetYPx: 0,
+          opacity: MARKER_LAYER_OPACITY,
+          centerXPct: 50,
+          centerYPct: 50,
+        };
+        const defenseMissCalibRaw = hitMarkerCalibrationMap[defenseMissMarker.id] ?? {
+          scale: 1,
+          offsetXPx: 0,
+          offsetYPx: 0,
+          opacity: MARKER_LAYER_OPACITY,
+          centerXPct: 50,
+          centerYPct: 50,
+        };
+        const attackMissCalib = {
+          scale: Math.max(0.3, Number(attackMissCalibRaw.scale ?? 1)),
+          opacity: clamp(Number(attackMissCalibRaw.opacity ?? MARKER_LAYER_OPACITY), 0, 1),
+          centerXPct: clamp(Number(attackMissCalibRaw.centerXPct ?? 50), 0, 100),
+          centerYPct: clamp(Number(attackMissCalibRaw.centerYPct ?? 50), 0, 100),
+        };
+        const defenseMissCalib = {
+          scale: Math.max(0.3, Number(defenseMissCalibRaw.scale ?? 1)),
+          opacity: clamp(Number(defenseMissCalibRaw.opacity ?? MARKER_LAYER_OPACITY), 0, 1),
+          centerXPct: clamp(Number(defenseMissCalibRaw.centerXPct ?? 50), 0, 100),
+          centerYPct: clamp(Number(defenseMissCalibRaw.centerYPct ?? 50), 0, 100),
+        };
+
+        if (attackMark === "hit") {
+          const forkVariant =
+            forkVariants[
+              Math.abs((row + 1) * 131 + (col + 1) * 197 + 91) % forkVariants.length
+            ];
+          const size = forkSize * Math.max(0.3, forkVariant.scale);
+          overlays.push({
+            key: `attack-hit-${row}-${col}`,
+            href: forkVariant.href,
+            leftPct: toPercent(center.x - size / 2, IMAGE_WIDTH),
+            topPct: toPercent(center.y - size * FORK_TARGET_CENTER_Y_RATIO, IMAGE_HEIGHT),
+            widthPct: toPercent(size, IMAGE_WIDTH),
+            heightPct: toPercent(size, IMAGE_HEIGHT),
+            opacity: clamp(forkVariant.opacity, 0, 1),
+            kind: "hit",
+            showContainer: showMarkerDebugBoxes,
+            imageOffsetXPx: 0,
+            imageOffsetYPx: 0,
+            rotationDeg: forkVariant.rotationDeg,
+            centerXPct: FORK_TARGET_CENTER_X_PCT,
+            centerYPct: FORK_TARGET_CENTER_Y_PCT,
+            anchor: "bottom-center",
+          });
+        } else if (attackMark === "miss") {
+          const size = baseMissSize * attackMissCalib.scale;
+          overlays.push({
+            key: `attack-miss-${row}-${col}`,
+            href: attackMissMarker.href,
+            leftPct: toPercent(center.x - size / 2, IMAGE_WIDTH),
+            topPct: toPercent(center.y - size / 2, IMAGE_HEIGHT),
+            widthPct: toPercent(size, IMAGE_WIDTH),
+            heightPct: toPercent(size, IMAGE_HEIGHT),
+            opacity: attackMissCalib.opacity,
+            kind: "miss",
+            showContainer: showMarkerDebugBoxes,
+            imageOffsetXPx: 0,
+            imageOffsetYPx: 0,
+            rotationDeg: 0,
+            centerXPct: attackMissCalib.centerXPct,
+            centerYPct: attackMissCalib.centerYPct,
+            anchor: "center",
+          });
+        }
+
+        if (!showDefenseLayer) continue;
+        if (defenseMark === "hit") {
+          const forkVariant =
+            forkVariants[
+              Math.abs((row + 1) * 131 + (col + 1) * 197 + 149) % forkVariants.length
+            ];
+          const size = forkSize * Math.max(0.3, forkVariant.scale);
+          overlays.push({
+            key: `defense-hit-${row}-${col}`,
+            href: forkVariant.href,
+            leftPct: toPercent(center.x - size / 2, IMAGE_WIDTH),
+            topPct: toPercent(center.y - size * FORK_TARGET_CENTER_Y_RATIO, IMAGE_HEIGHT),
+            widthPct: toPercent(size, IMAGE_WIDTH),
+            heightPct: toPercent(size, IMAGE_HEIGHT),
+            opacity: clamp(forkVariant.opacity, 0, 1),
+            kind: "hit",
+            showContainer: showMarkerDebugBoxes,
+            imageOffsetXPx: 0,
+            imageOffsetYPx: 0,
+            rotationDeg: forkVariant.rotationDeg,
+            centerXPct: FORK_TARGET_CENTER_X_PCT,
+            centerYPct: FORK_TARGET_CENTER_Y_PCT,
+            anchor: "bottom-center",
+          });
+        } else if (defenseMark === "miss") {
+          const size = baseMissSize * defenseMissCalib.scale;
+          overlays.push({
+            key: `defense-miss-${row}-${col}`,
+            href: defenseMissMarker.href,
+            leftPct: toPercent(center.x - size / 2, IMAGE_WIDTH),
+            topPct: toPercent(center.y - size / 2, IMAGE_HEIGHT),
+            widthPct: toPercent(size, IMAGE_WIDTH),
+            heightPct: toPercent(size, IMAGE_HEIGHT),
+            opacity: defenseMissCalib.opacity,
+            kind: "miss",
+            showContainer: showMarkerDebugBoxes,
+            imageOffsetXPx: 0,
+            imageOffsetYPx: 0,
+            rotationDeg: 0,
+            centerXPct: defenseMissCalib.centerXPct,
+            centerYPct: defenseMissCalib.centerYPct,
+            anchor: "center",
+          });
+        }
+      }
+    }
+
+    return overlays;
+  }, [
+    attackRadar,
+    boardBoundary,
+    defenseRadar,
+    forkVariantCalibrationMap,
+    hitMarkerCalibrationMap,
+    showDefenseLayer,
+    showMarkerDebugBoxes,
+  ]);
+
+  const defenseOverlays = useMemo(() => {
+    const overlays: ShipOverlay[] = [];
+    const coveredCellKeys = new Set<string>();
+    const ships = collectShipCells(shipGrid, waterValue);
+
+    for (const [shipId, cells] of ships.entries()) {
+      if (cells.length === 0) continue;
+      const first = cells[0];
+      const horizontal = cells.every((cell) => cell.row === first.row);
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      for (const cell of cells) {
+        const corners = cellCorners(boardBoundary, cell.row, cell.col);
+        for (const point of corners) {
+          minX = Math.min(minX, point.x);
+          minY = Math.min(minY, point.y);
+          maxX = Math.max(maxX, point.x);
+          maxY = Math.max(maxY, point.y);
+        }
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        continue;
+      }
+      const points: [Point, Point, Point, Point] = [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+      ];
+      const keys = cells.map((cell) => cellKey(cell.row, cell.col));
+      keys.forEach((key) => coveredCellKeys.add(key));
+      overlays.push({
+        key: `defense-${shipId}`,
+        templateId: "ship-2-idle",
+        imageHref:
+          cells.length === 1
+            ? "/ui/ships/ship-1.png"
+            : horizontal
+            ? `/ui/ships/ship-${Math.min(5, cells.length)}-h.png`
+            : `/ui/ships/ship-${Math.min(5, cells.length)}-v.png`,
+        points,
+        coveredCellKeys: keys,
+      });
+    }
+
+    return { overlays, coveredCellKeys };
+  }, [boardBoundary, shipGrid, waterValue]);
+
+
+  const markerSample = useMemo(() => {
+    const row = Math.floor(GRID_SIZE / 2);
+    const col = Math.floor(GRID_SIZE / 2);
+    const corners = cellCorners(boardBoundary, row, col);
+    const center = centerPoint(boardBoundary, row, col);
+    return {
+      centerX: center.x,
+      centerY: center.y,
+      holeSize: missMarkSize(corners),
+    };
+  }, [boardBoundary]);
+
+  useEffect(() => {
+    onMarkerSampleChange?.(markerSample);
+  }, [markerSample, onMarkerSampleChange]);
 
   const activeSplashEffects = useMemo(() => {
     return hitEffects
@@ -1398,7 +1694,7 @@ export function CarpetBoard({
               }}
               aria-hidden="true"
             >
-              {shipOverlays.map((overlay) => {
+              {attackOverlays.overlays.map((overlay) => {
                 const transform = spriteTransformMap[overlay.templateId];
                 const spec = buildOverlayRenderSpec(overlay.points, transform);
                 return (
@@ -1416,7 +1712,27 @@ export function CarpetBoard({
                   />
                 );
               })}
-
+              {defenseOverlays.overlays.map((overlay) => {
+                const transform = spriteTransformMap[overlay.templateId];
+                const spec = buildOverlayRenderSpec(overlay.points, transform);
+                return (
+                  <image
+                    key={overlay.key}
+                    href={overlay.imageHref}
+                    x={spec.x}
+                    y={spec.y}
+                    width={spec.width}
+                    height={spec.height}
+                    preserveAspectRatio="xMidYMid meet"
+                    transform={`rotate(${transform.rotationDeg} ${spec.cx} ${spec.cy})`}
+                    opacity={showDefenseLayer ? 0.95 : 0}
+                    style={{
+                      pointerEvents: "none",
+                      filter: "drop-shadow(0 6px 10px rgba(0,0,0,0.35))",
+                    }}
+                  />
+                );
+              })}
               {showSetupUi && previewOverlay && draftSpriteTransform && (() => {
                 const spec = buildOverlayRenderSpec(previewOverlay.points, draftSpriteTransform);
                 return (
@@ -1495,6 +1811,68 @@ export function CarpetBoard({
                 }}
               />
             ))}
+
+            {markerOverlays.map((marker) => {
+              const wobbleStart = forkWobbleStarts[marker.key];
+              const shouldWobble =
+                marker.kind === "hit" &&
+                typeof wobbleStart === "number" &&
+                splashClockMs - wobbleStart < FORK_WOBBLE_MS;
+              return (
+                <div
+                  key={marker.key}
+                  className={`pointer-events-none absolute ${
+                    marker.anchor === "bottom-center" ? "overflow-visible" : "overflow-hidden"
+                  } ${
+                    marker.kind === "hit" ? "z-[80]" : "z-[72]"
+                  }`}
+                  style={{
+                    left: `${marker.leftPct}%`,
+                    top: `${marker.topPct}%`,
+                    width: `${marker.widthPct}%`,
+                    height: `${marker.heightPct}%`,
+                  }}
+                >
+                  <img
+                    src={marker.href}
+                    alt=""
+                    className="pointer-events-none absolute h-full w-full"
+                    style={{
+                      left: marker.anchor === "bottom-center" ? "0%" : "50%",
+                      top: marker.anchor === "bottom-center" ? "0%" : "50%",
+                      opacity: marker.opacity,
+                      imageRendering: "auto",
+                      transform:
+                        marker.anchor === "bottom-center"
+                          ? `rotate(${marker.rotationDeg}deg)`
+                          : `translate(-${marker.centerXPct}%, -${marker.centerYPct}%) rotate(${marker.rotationDeg}deg)`,
+                      transformOrigin:
+                        marker.anchor === "bottom-center" ? "50% 100%" : "center center",
+                      animation: shouldWobble
+                        ? `forkStickWobble ${FORK_WOBBLE_MS}ms ease-out 1`
+                        : undefined,
+                    }}
+                  />
+                  {marker.showContainer && (
+                    <>
+                      <div className="pointer-events-none absolute inset-0 rounded-[4px] border border-cyan-200/90" />
+                      {marker.kind === "hit" && (
+                        <div className="pointer-events-none absolute inset-0 grid grid-cols-3 grid-rows-3 text-[9px] font-bold leading-none text-cyan-100">
+                          {Array.from({ length: 9 }, (_, index) => (
+                            <div
+                              key={`${marker.key}-cell-${index + 1}`}
+                              className="flex items-center justify-center border border-cyan-200/45 bg-cyan-950/18"
+                            >
+                              {index + 1}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
 
             {enableHandStrike && leftHandPlacement && (
               <img

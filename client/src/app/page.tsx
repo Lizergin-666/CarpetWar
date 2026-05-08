@@ -17,13 +17,16 @@ import { CarpetBoard } from "../components/CarpetBoard";
 
 const BOARD_SIZE = 10;
 const SHOTS_PER_TURN = 3;
-const BOT_TURN_DELAY_MS = 750;
+const BOT_TURN_DELAY_MS = 2000;
+const TURN_SWAP_WAIT_MS = 1000;
+const TURN_SWAP_FADE_HALF_MS = 750;
 const PLAYER_TURN_SECONDS = 20;
 const WATER = -1;
 const MISS_SOUND_URL = "/sound/smash1.mp3";
 const THEME_SOUND_URL = "/sound/Theme.mp3";
 const HMM_SOUND_URL = "/sound/hmm.mp3";
 const LAUGH_SOUND_URL = "/sound/lought.mp3";
+const FALL_SOUND_URL = "/sound/fall.mp3";
 const HISTORY_LIMIT = 25;
 const STORAGE_HISTORY_KEY = "sea-war.match-history.v1";
 const STORAGE_DIFFICULTY_KEY = "sea-war.bot-difficulty.v1";
@@ -44,6 +47,7 @@ const UI_DOOR_LEFT_URL = "/ui/door-left.png";
 const UI_DOOR_RIGHT_URL = "/ui/door-right.png";
 const UI_BUTTON_STAT_URL = "/ui/btn-stat.png";
 const UI_BUTTON_SOUND_URL = "/ui/btn-sound.png";
+const UI_BUTTON_SOUND_OFF_URL = "/ui/btn-sound-off.png";
 const UI_BUTTON_LOGIN_URL = "/ui/btn-login.png";
 const UI_BUTTON_LEADER_URL = "/ui/btn-leader.png";
 const UI_BUTTON_GOOGLE_URL = "/ui/btn-google.png";
@@ -55,6 +59,9 @@ const UI_BUTTON_MAN_URL = "/ui/btn-man.png";
 const BUTTON_SOUND_URL = "/ui/button.mp3";
 const UI_CALIBRATION_STORAGE_KEY = "sea-war.ui-calibration.v1";
 const SHIP_VISUAL_CALIBRATION_STORAGE_KEY = "sea-war.ship-visual-calibration.v1";
+const PLACEMENT_UI_CALIBRATION_STORAGE_KEY = "sea-war.placement-ui-calibration.v1";
+const HIT_MARKER_CALIBRATION_STORAGE_KEY = "sea-war.hit-marker-calibration.v1";
+const FORK_VARIANT_CALIBRATION_STORAGE_KEY = "sea-war.fork-variant-calibration.v1";
 const MODAL_BUTTON_MOTION_CLASS =
   "transition-transform duration-150 ease-out hover:-translate-y-[2px] hover:scale-[1.03] active:translate-y-[1px] active:scale-[0.98]";
 const MENU_BUTTON_RIGHT_PCT = 1.9;
@@ -64,16 +71,24 @@ const MENU_PANEL_WIDTH_PCT = 19.6;
 const MENU_PANEL_CENTER_X_PCT =
   100 - MENU_BUTTON_RIGHT_PCT - MENU_BUTTON_WIDTH_PCT / 2;
 const ONLINE_PLACEMENT_FLEET = FLEET;
+const BOARD_ROTATION_DEG = 0;
 const PLACEMENT_SHIP_TYPES = Array.from(new Set<number>(ONLINE_PLACEMENT_FLEET));
 const CARPET_IMAGE_WIDTH = 1448;
 const CARPET_IMAGE_HEIGHT = 1086;
 const BOARD_FRAME_REFERENCE_WIDTH = 1860;
-const PLACEMENT_CLICK_DELAY_MS = 500;
 const FALLBACK_SUPABASE_URL = "https://reiafaehflhbosmzkajm.supabase.co";
 const FALLBACK_SUPABASE_PUBLISHABLE_KEY =
   "sb_publishable_7EPT724iGnusPS9QCZV1qA_0UaXLWXJ";
 const FALLBACK_SOCKET_URL_LOCAL = "http://localhost:4000";
 const FALLBACK_SOCKET_URL_PROD = "https://carpetwar-production.up.railway.app";
+const HIT_MARKER_IDS = ["hit-1", "hit-2", "hit-3", "hit-4", "hit-5", "hit-6"] as const;
+const FORK_VARIANT_IDS = ["fork-1", "fork-2", "fork-3", "fork-4"] as const;
+const SHIP_SLOT_LEFT_PCT = 35;
+const SHIP_SLOT_TOP_PCT = 25;
+const SHIP_SLOT_WIDTH_PCT = 30;
+const SHIP_SLOT_HEIGHT_PCT = 50;
+const SHIP_SLOT_CENTER_X_PCT = SHIP_SLOT_LEFT_PCT + SHIP_SLOT_WIDTH_PCT / 2;
+const SHIP_SLOT_CENTER_Y_PCT = SHIP_SLOT_TOP_PCT + SHIP_SLOT_HEIGHT_PCT / 2;
 const SHIP_ICON_BY_LENGTH_ORIENTATION: Record<
   number,
   { horizontal: string; vertical: string }
@@ -195,6 +210,36 @@ interface PlacementShipVisual {
   shadowBlurPx: number;
 }
 
+interface SoloBattleShipVisual {
+  id: string;
+  length: number;
+  horizontal: boolean;
+  visual: PlacementShipVisual;
+}
+
+interface HitMarkerDragState {
+  target: "hit" | "fork";
+  mode: "move" | "scale";
+  startClientX: number;
+  startClientY: number;
+  startOffsetXPx: number;
+  startOffsetYPx: number;
+  startScale: number;
+}
+
+type MenuCalibrationKey =
+  | "startButton"
+  | "onlineButton"
+  | "offlineButton"
+  | "babyButton"
+  | "manButton"
+  | "nightmareButton"
+  | "soundOnButton"
+  | "soundButton"
+  | "statButton"
+  | "leaderButton"
+  | "loginButton";
+
 interface RoomActionAck {
   ok: boolean;
   error?: string;
@@ -244,6 +289,7 @@ interface GameState {
   botTried: boolean[][];
   turn: Turn;
   shotsLeft: number;
+  botShotsLeft: number;
   winner: "player" | "bot" | null;
   status: string;
   log: string[];
@@ -279,6 +325,45 @@ interface CalibrationRect {
   heightPct: number;
 }
 
+type HitMarkerId = (typeof HIT_MARKER_IDS)[number];
+type ForkVariantId = (typeof FORK_VARIANT_IDS)[number];
+
+interface PlacementUiCalibration {
+  panelLeftPct: number;
+  panelTopPct: number;
+  panelWidthPct: number;
+  panelGapPx: number;
+  badgeOffsetXPx: number;
+  badgeOffsetYPx: number;
+  badgeScale: number;
+  shipSlotScale: number;
+}
+
+interface HitMarkerCalibration {
+  scale: number;
+  offsetXPx: number;
+  offsetYPx: number;
+  opacity: number;
+  centerXPct: number;
+  centerYPct: number;
+}
+
+type HitMarkerCalibrationMap = Record<HitMarkerId, HitMarkerCalibration>;
+
+interface ForkVariantCalibration {
+  href: string;
+  enabled: boolean;
+  scale: number;
+  offsetXPx: number;
+  offsetYPx: number;
+  opacity: number;
+  rotationDeg: number;
+  centerXPct: number;
+  centerYPct: number;
+}
+
+type ForkVariantCalibrationMap = Record<ForkVariantId, ForkVariantCalibration>;
+
 interface ShipCursorCalibration {
   deckSizePx: number;
   thicknessPx: number;
@@ -294,11 +379,13 @@ interface ShipCursorCalibration {
 }
 
 interface UiCalibrationConfig {
+  startButton: CalibrationRect;
   onlineButton: CalibrationRect;
   offlineButton: CalibrationRect;
   babyButton: CalibrationRect;
   manButton: CalibrationRect;
   nightmareButton: CalibrationRect;
+  soundOnButton: CalibrationRect;
   soundButton: CalibrationRect;
   statButton: CalibrationRect;
   leaderButton: CalibrationRect;
@@ -323,11 +410,13 @@ type ShipVisualCalibrationMap = Record<
 >;
 
 const DEFAULT_UI_CALIBRATION: UiCalibrationConfig = {
+  startButton: { leftPct: 41, topPct: 84.9, widthPct: 18, heightPct: 11.4 },
   onlineButton: { leftPct: 8.5, topPct: 41.4, widthPct: 83, heightPct: 15.4 },
   offlineButton: { leftPct: 8.5, topPct: 59.1, widthPct: 83, heightPct: 15.4 },
   babyButton: { leftPct: 7.6, topPct: 37.9, widthPct: 84.8, heightPct: 15.6 },
   manButton: { leftPct: 7.6, topPct: 56.4, widthPct: 84.8, heightPct: 15.6 },
   nightmareButton: { leftPct: 7.6, topPct: 74.8, widthPct: 84.8, heightPct: 15.6 },
+  soundOnButton: { leftPct: 11.1, topPct: 20.4, widthPct: 77.8, heightPct: 13.2 },
   soundButton: { leftPct: 11.1, topPct: 20.4, widthPct: 77.8, heightPct: 13.2 },
   statButton: { leftPct: 11.1, topPct: 38.2, widthPct: 77.8, heightPct: 13.2 },
   leaderButton: { leftPct: 11.1, topPct: 55.9, widthPct: 77.8, heightPct: 13.2 },
@@ -360,6 +449,45 @@ const DEFAULT_UI_CALIBRATION: UiCalibrationConfig = {
   },
 };
 
+const DEFAULT_PLACEMENT_UI_CALIBRATION: PlacementUiCalibration = {
+  panelLeftPct: 1.6,
+  panelTopPct: 20.3,
+  panelWidthPct: 31.6,
+  panelGapPx: 6,
+  badgeOffsetXPx: 0,
+  badgeOffsetYPx: 0,
+  badgeScale: 1,
+  shipSlotScale: 2.15,
+};
+
+const DEFAULT_HIT_MARKER_CALIBRATION: HitMarkerCalibration = {
+  scale: 1,
+  offsetXPx: 0,
+  offsetYPx: 0,
+  opacity: 0.8,
+  centerXPct: 50,
+  centerYPct: 50,
+};
+
+const DEFAULT_FORK_IMAGE_HREF = "/sprites/fork.png";
+const LEGACY_MISSING_FORK_PATHS = new Set([
+  "/sprites/fork-2.png",
+  "/sprites/fork-3.png",
+  "/sprites/fork-4.png",
+]);
+
+const DEFAULT_FORK_VARIANT_CALIBRATION: ForkVariantCalibration = {
+  href: DEFAULT_FORK_IMAGE_HREF,
+  enabled: true,
+  scale: 1,
+  offsetXPx: 0,
+  offsetYPx: 0,
+  opacity: 1,
+  rotationDeg: 0,
+  centerXPct: 50,
+  centerYPct: 83.3333,
+};
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -385,11 +513,24 @@ function normalizeCalibrationRect(rect: CalibrationRect): CalibrationRect {
   };
 }
 
+function resolveCalibrationRect(
+  fallback: CalibrationRect,
+  candidate: unknown
+): CalibrationRect {
+  if (!candidate || typeof candidate !== "object") {
+    return { ...fallback };
+  }
+  return {
+    ...fallback,
+    ...(candidate as Partial<CalibrationRect>),
+  };
+}
+
 function normalizeShipCursorCalibration(config: ShipCursorCalibration): ShipCursorCalibration {
   return {
-    deckSizePx: clampNumber(config.deckSizePx, 12, 520),
-    thicknessPx: clampNumber(config.thicknessPx, 12, 520),
-    minLengthPx: clampNumber(config.minLengthPx, 30, 2200),
+    deckSizePx: clampNumber(config.deckSizePx, 12, 1200),
+    thicknessPx: clampNumber(config.thicknessPx, 12, 1200),
+    minLengthPx: clampNumber(config.minLengthPx, 30, 4200),
     anchorXPct: clampNumber(config.anchorXPct, -220, 320),
     anchorYPct: clampNumber(config.anchorYPct, -220, 320),
     offsetXPx: clampNumber(config.offsetXPx, -2200, 2200),
@@ -401,17 +542,121 @@ function normalizeShipCursorCalibration(config: ShipCursorCalibration): ShipCurs
   };
 }
 
+function normalizePlacementUiCalibration(
+  config: PlacementUiCalibration
+): PlacementUiCalibration {
+  return {
+    panelLeftPct: clampNumber(config.panelLeftPct, -20, 90),
+    panelTopPct: clampNumber(config.panelTopPct, -20, 90),
+    panelWidthPct: clampNumber(config.panelWidthPct, 8, 70),
+    panelGapPx: clampNumber(config.panelGapPx, -120, 40),
+    badgeOffsetXPx: clampNumber(config.badgeOffsetXPx, -120, 120),
+    badgeOffsetYPx: clampNumber(config.badgeOffsetYPx, -120, 120),
+    badgeScale: clampNumber(config.badgeScale, 0.4, 3),
+    shipSlotScale: clampNumber(config.shipSlotScale, 0.4, 6),
+  };
+}
+
+function normalizeHitMarkerCalibration(config: HitMarkerCalibration): HitMarkerCalibration {
+  return {
+    scale: clampNumber(config.scale, 0.3, 8),
+    offsetXPx: clampNumber(config.offsetXPx, -120, 120),
+    offsetYPx: clampNumber(config.offsetYPx, -120, 120),
+    opacity: clampNumber(config.opacity, 0, 1),
+    centerXPct: clampNumber(config.centerXPct, 0, 100),
+    centerYPct: clampNumber(config.centerYPct, 0, 100),
+  };
+}
+
+function createDefaultHitMarkerCalibrationMap(): HitMarkerCalibrationMap {
+  return Object.fromEntries(
+    HIT_MARKER_IDS.map((id) => [id, { ...DEFAULT_HIT_MARKER_CALIBRATION }])
+  ) as HitMarkerCalibrationMap;
+}
+
+function normalizeForkVariantCalibration(
+  config: ForkVariantCalibration
+): ForkVariantCalibration {
+  return {
+    href: resolveForkHref(String(config.href ?? "").trim()),
+    enabled: Boolean(config.enabled),
+    scale: clampNumber(config.scale, 0.3, 8),
+    offsetXPx: clampNumber(config.offsetXPx, -120, 120),
+    offsetYPx: clampNumber(config.offsetYPx, -120, 120),
+    opacity: clampNumber(config.opacity, 0, 1),
+    rotationDeg: clampNumber(config.rotationDeg, -180, 180),
+    centerXPct: clampNumber(config.centerXPct, 0, 100),
+    centerYPct: clampNumber(config.centerYPct, 0, 100),
+  };
+}
+
+function createDefaultForkVariantCalibrationMap(): ForkVariantCalibrationMap {
+  return {
+    "fork-1": {
+      ...DEFAULT_FORK_VARIANT_CALIBRATION,
+      href: DEFAULT_FORK_IMAGE_HREF,
+      enabled: true,
+    },
+    "fork-2": {
+      ...DEFAULT_FORK_VARIANT_CALIBRATION,
+      href: DEFAULT_FORK_IMAGE_HREF,
+      enabled: false,
+    },
+    "fork-3": {
+      ...DEFAULT_FORK_VARIANT_CALIBRATION,
+      href: DEFAULT_FORK_IMAGE_HREF,
+      enabled: false,
+    },
+    "fork-4": {
+      ...DEFAULT_FORK_VARIANT_CALIBRATION,
+      href: DEFAULT_FORK_IMAGE_HREF,
+      enabled: false,
+    },
+  };
+}
+
+function resolveForkHref(href: string): string {
+  const normalized = String(href ?? "").trim();
+  if (!normalized) return DEFAULT_FORK_IMAGE_HREF;
+  if (LEGACY_MISSING_FORK_PATHS.has(normalized)) return DEFAULT_FORK_IMAGE_HREF;
+  return normalized;
+}
+
 function normalizeUiCalibration(config: UiCalibrationConfig): UiCalibrationConfig {
   return {
-    onlineButton: normalizeCalibrationRect(config.onlineButton),
-    offlineButton: normalizeCalibrationRect(config.offlineButton),
-    babyButton: normalizeCalibrationRect(config.babyButton),
-    manButton: normalizeCalibrationRect(config.manButton),
-    nightmareButton: normalizeCalibrationRect(config.nightmareButton),
-    soundButton: normalizeCalibrationRect(config.soundButton),
-    statButton: normalizeCalibrationRect(config.statButton),
-    leaderButton: normalizeCalibrationRect(config.leaderButton),
-    loginButton: normalizeCalibrationRect(config.loginButton),
+    startButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.startButton, config.startButton)
+    ),
+    onlineButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.onlineButton, config.onlineButton)
+    ),
+    offlineButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.offlineButton, config.offlineButton)
+    ),
+    babyButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.babyButton, config.babyButton)
+    ),
+    manButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.manButton, config.manButton)
+    ),
+    nightmareButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.nightmareButton, config.nightmareButton)
+    ),
+    soundOnButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.soundOnButton, config.soundOnButton)
+    ),
+    soundButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.soundButton, config.soundButton)
+    ),
+    statButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.statButton, config.statButton)
+    ),
+    leaderButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.leaderButton, config.leaderButton)
+    ),
+    loginButton: normalizeCalibrationRect(
+      resolveCalibrationRect(DEFAULT_UI_CALIBRATION.loginButton, config.loginButton)
+    ),
     shipCursorHorizontal: normalizeShipCursorCalibration(config.shipCursorHorizontal),
     shipCursorVertical: normalizeShipCursorCalibration(config.shipCursorVertical),
   };
@@ -464,11 +709,13 @@ function cloneShipVisualCalibrationMap(map: ShipVisualCalibrationMap): ShipVisua
 
 function cloneUiCalibration(config: UiCalibrationConfig): UiCalibrationConfig {
   return {
+    startButton: { ...config.startButton },
     onlineButton: { ...config.onlineButton },
     offlineButton: { ...config.offlineButton },
     babyButton: { ...config.babyButton },
     manButton: { ...config.manButton },
     nightmareButton: { ...config.nightmareButton },
+    soundOnButton: { ...config.soundOnButton },
     soundButton: { ...config.soundButton },
     statButton: { ...config.statButton },
     leaderButton: { ...config.leaderButton },
@@ -485,11 +732,13 @@ function readStoredUiCalibration(): UiCalibrationConfig {
     if (!raw) return cloneUiCalibration(DEFAULT_UI_CALIBRATION);
     const parsed = JSON.parse(raw) as Partial<UiCalibrationConfig>;
     const merged: UiCalibrationConfig = {
+      startButton: { ...DEFAULT_UI_CALIBRATION.startButton, ...parsed.startButton },
       onlineButton: { ...DEFAULT_UI_CALIBRATION.onlineButton, ...parsed.onlineButton },
       offlineButton: { ...DEFAULT_UI_CALIBRATION.offlineButton, ...parsed.offlineButton },
       babyButton: { ...DEFAULT_UI_CALIBRATION.babyButton, ...parsed.babyButton },
       manButton: { ...DEFAULT_UI_CALIBRATION.manButton, ...parsed.manButton },
       nightmareButton: { ...DEFAULT_UI_CALIBRATION.nightmareButton, ...parsed.nightmareButton },
+      soundOnButton: { ...DEFAULT_UI_CALIBRATION.soundOnButton, ...parsed.soundOnButton },
       soundButton: { ...DEFAULT_UI_CALIBRATION.soundButton, ...parsed.soundButton },
       statButton: { ...DEFAULT_UI_CALIBRATION.statButton, ...parsed.statButton },
       leaderButton: { ...DEFAULT_UI_CALIBRATION.leaderButton, ...parsed.leaderButton },
@@ -560,6 +809,86 @@ function writeStoredShipVisualCalibration(map: ShipVisualCalibrationMap): void {
     SHIP_VISUAL_CALIBRATION_STORAGE_KEY,
     JSON.stringify(normalizeShipVisualCalibrationMap(map))
   );
+}
+
+function readStoredPlacementUiCalibration(): PlacementUiCalibration {
+  if (typeof window === "undefined") return { ...DEFAULT_PLACEMENT_UI_CALIBRATION };
+  try {
+    const raw = localStorage.getItem(PLACEMENT_UI_CALIBRATION_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_PLACEMENT_UI_CALIBRATION };
+    const parsed = JSON.parse(raw) as Partial<PlacementUiCalibration>;
+    return normalizePlacementUiCalibration({
+      ...DEFAULT_PLACEMENT_UI_CALIBRATION,
+      ...parsed,
+    });
+  } catch {
+    return { ...DEFAULT_PLACEMENT_UI_CALIBRATION };
+  }
+}
+
+function writeStoredPlacementUiCalibration(config: PlacementUiCalibration): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(
+    PLACEMENT_UI_CALIBRATION_STORAGE_KEY,
+    JSON.stringify(normalizePlacementUiCalibration(config))
+  );
+}
+
+function readStoredHitMarkerCalibrationMap(): HitMarkerCalibrationMap {
+  if (typeof window === "undefined") return createDefaultHitMarkerCalibrationMap();
+  try {
+    const raw = localStorage.getItem(HIT_MARKER_CALIBRATION_STORAGE_KEY);
+    if (!raw) return createDefaultHitMarkerCalibrationMap();
+    const parsed = JSON.parse(raw) as Record<string, Partial<HitMarkerCalibration> | undefined>;
+    const defaults = createDefaultHitMarkerCalibrationMap();
+    return Object.fromEntries(
+      HIT_MARKER_IDS.map((id) => [
+        id,
+        normalizeHitMarkerCalibration({
+          ...defaults[id],
+          ...(parsed[id] ?? {}),
+        }),
+      ])
+    ) as HitMarkerCalibrationMap;
+  } catch {
+    return createDefaultHitMarkerCalibrationMap();
+  }
+}
+
+function writeStoredHitMarkerCalibrationMap(map: HitMarkerCalibrationMap): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(HIT_MARKER_CALIBRATION_STORAGE_KEY, JSON.stringify(map));
+}
+
+function readStoredForkVariantCalibrationMap(): ForkVariantCalibrationMap {
+  if (typeof window === "undefined") return createDefaultForkVariantCalibrationMap();
+  try {
+    const raw = localStorage.getItem(FORK_VARIANT_CALIBRATION_STORAGE_KEY);
+    if (!raw) return createDefaultForkVariantCalibrationMap();
+    const parsed = JSON.parse(raw) as Record<
+      string,
+      Partial<ForkVariantCalibration> | undefined
+    >;
+    const defaults = createDefaultForkVariantCalibrationMap();
+    const normalized = Object.fromEntries(
+      FORK_VARIANT_IDS.map((id) => [
+        id,
+        normalizeForkVariantCalibration({
+          ...defaults[id],
+          ...(parsed[id] ?? {}),
+          href: resolveForkHref(String((parsed[id]?.href ?? defaults[id].href) ?? "")),
+        }),
+      ])
+    ) as ForkVariantCalibrationMap;
+    return normalized;
+  } catch {
+    return createDefaultForkVariantCalibrationMap();
+  }
+}
+
+function writeStoredForkVariantCalibrationMap(map: ForkVariantCalibrationMap): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(FORK_VARIANT_CALIBRATION_STORAGE_KEY, JSON.stringify(map));
 }
 
 function areShipCursorCalibrationsEqual(
@@ -1317,6 +1646,7 @@ function applyPlayerShot(
       turn: "finished",
       winner: "player",
       shotsLeft: 0,
+      botShotsLeft: 0,
       status: "You win this match.",
       log: nextLog.slice(0, 12),
     };
@@ -1331,6 +1661,7 @@ function applyPlayerShot(
       playerShotsFired: state.playerShotsFired + 1,
       playerHits: nextPlayerHits,
       shotsLeft,
+      botShotsLeft: 0,
       status: `Your turn: ${shotsLeft} shots left.`,
       log: nextLog.slice(0, 12),
     };
@@ -1344,6 +1675,7 @@ function applyPlayerShot(
     playerHits: nextPlayerHits,
     turn: "bot",
     shotsLeft: 0,
+    botShotsLeft: SHOTS_PER_TURN,
     status: `Bot thinking (${BOT_DIFFICULTY_LABELS[state.difficulty]})...`,
     log: nextLog.slice(0, 12),
   };
@@ -1362,6 +1694,7 @@ function autoFireRemainingShots(state: GameState): GameState {
         ...nextState,
         turn: "bot",
         shotsLeft: 0,
+        botShotsLeft: SHOTS_PER_TURN,
         status: `Bot thinking (${BOT_DIFFICULTY_LABELS[nextState.difficulty]})...`,
       };
     }
@@ -1394,6 +1727,7 @@ function createGameState(botDifficulty: BotDifficulty, playerPlacementOverride?:
     botTried: createGrid<boolean>(false),
     turn: "player",
     shotsLeft: SHOTS_PER_TURN,
+    botShotsLeft: 0,
     winner: null,
     status: "Your turn: fire 3 shots.",
     log: [
@@ -1405,7 +1739,7 @@ function createGameState(botDifficulty: BotDifficulty, playerPlacementOverride?:
   };
 }
 
-function resolveBotSalvo(state: GameState, difficulty: BotDifficulty): GameState {
+function resolveBotSingleShot(state: GameState, difficulty: BotDifficulty): GameState {
   if (state.turn !== "bot") return state;
 
   const nextState: GameState = {
@@ -1416,29 +1750,33 @@ function resolveBotSalvo(state: GameState, difficulty: BotDifficulty): GameState
     log: [...state.log],
   };
 
-  const botEvents: string[] = [];
-
-  for (let shot = 0; shot < SHOTS_PER_TURN; shot += 1) {
-    const target = chooseBotShot(nextState, difficulty);
-    if (!target) break;
-
-    nextState.botTried[target.row][target.col] = true;
-    nextState.botShotsFired += 1;
-    const shipId = nextState.playerShipGrid[target.row][target.col];
-    const coord = formatCoord(target.row, target.col);
-
-    if (shipId !== WATER) {
-      nextState.botRadar[target.row][target.col] = "hit";
-      nextState.playerShipHits[shipId] += 1;
-      nextState.botHits += 1;
-      botEvents.push(`Bot hit your ship at ${coord}.`);
-    } else {
-      nextState.botRadar[target.row][target.col] = "miss";
-      botEvents.push(`Bot missed at ${coord}.`);
-    }
+  const target = chooseBotShot(nextState, difficulty);
+  if (!target) {
+    return {
+      ...nextState,
+      turn: "player",
+      shotsLeft: SHOTS_PER_TURN,
+      botShotsLeft: 0,
+      status: "Your turn: fire 3 shots.",
+      log: nextState.log.slice(0, 12),
+      round: state.round + 1,
+    };
   }
 
-  nextState.log.unshift(...botEvents.reverse());
+  nextState.botTried[target.row][target.col] = true;
+  nextState.botShotsFired += 1;
+  const shipId = nextState.playerShipGrid[target.row][target.col];
+  const coord = formatCoord(target.row, target.col);
+
+  if (shipId !== WATER) {
+    nextState.botRadar[target.row][target.col] = "hit";
+    nextState.playerShipHits[shipId] += 1;
+    nextState.botHits += 1;
+    nextState.log.unshift(`Bot hit your ship at ${coord}.`);
+  } else {
+    nextState.botRadar[target.row][target.col] = "miss";
+    nextState.log.unshift(`Bot missed at ${coord}.`);
+  }
 
   if (isFleetDestroyed(nextState.playerShipHits, nextState.playerShipLengths)) {
     return {
@@ -1446,7 +1784,20 @@ function resolveBotSalvo(state: GameState, difficulty: BotDifficulty): GameState
       turn: "finished",
       winner: "bot",
       shotsLeft: 0,
+      botShotsLeft: 0,
       status: "Bot wins this match.",
+      log: nextState.log.slice(0, 12),
+    };
+  }
+
+  const botShotsLeft = Math.max(1, state.botShotsLeft || SHOTS_PER_TURN) - 1;
+  if (botShotsLeft > 0) {
+    return {
+      ...nextState,
+      turn: "bot",
+      shotsLeft: 0,
+      botShotsLeft,
+      status: `Bot turn: ${botShotsLeft} shot(s) left...`,
       log: nextState.log.slice(0, 12),
     };
   }
@@ -1455,6 +1806,7 @@ function resolveBotSalvo(state: GameState, difficulty: BotDifficulty): GameState
     ...nextState,
     turn: "player",
     shotsLeft: SHOTS_PER_TURN,
+    botShotsLeft: 0,
     status: "Your turn: fire 3 shots.",
     log: nextState.log.slice(0, 12),
     round: state.round + 1,
@@ -1488,6 +1840,30 @@ export default function Home() {
   const [uiCalibrationDraft, setUiCalibrationDraft] = useState<UiCalibrationConfig>(() =>
     readStoredUiCalibration()
   );
+  const [placementUiCalibration, setPlacementUiCalibration] = useState<PlacementUiCalibration>(
+    () => readStoredPlacementUiCalibration()
+  );
+  const [hitMarkerCalibrationMap, setHitMarkerCalibrationMap] =
+    useState<HitMarkerCalibrationMap>(() => readStoredHitMarkerCalibrationMap());
+  const [forkVariantCalibrationMap, setForkVariantCalibrationMap] =
+    useState<ForkVariantCalibrationMap>(() => readStoredForkVariantCalibrationMap());
+  const [displayPerspective, setDisplayPerspective] = useState<"player" | "opponent">(
+    "player"
+  );
+  const [turnSwapPhase, setTurnSwapPhase] = useState<
+    "stable" | "waiting" | "fade-out" | "fade-in"
+  >("stable");
+  const [isFocusedCalibrationOpen, setIsFocusedCalibrationOpen] = useState<boolean>(false);
+  const [isImpactCalibrationOpen, setIsImpactCalibrationOpen] = useState<boolean>(false);
+  const [impactCalibrationTarget, setImpactCalibrationTarget] = useState<"hit" | "fork">(
+    "hit"
+  );
+  const [selectedHitMarkerId, setSelectedHitMarkerId] = useState<HitMarkerId>("hit-1");
+  const [selectedForkVariantId, setSelectedForkVariantId] =
+    useState<ForkVariantId>("fork-1");
+  const [hitMarkerDragState, setHitMarkerDragState] = useState<HitMarkerDragState | null>(null);
+  const [selectedMenuCalibrationKey, setSelectedMenuCalibrationKey] =
+    useState<MenuCalibrationKey>("startButton");
   const [shipVisualCalibration, setShipVisualCalibration] = useState<ShipVisualCalibrationMap>(() =>
     readStoredShipVisualCalibration()
   );
@@ -1509,11 +1885,15 @@ export default function Home() {
   const [joinCode, setJoinCode] = useState<string>("");
   const [roomMode, setRoomMode] = useState<RoomMode>("classic");
   const [soloPlacementActive, setSoloPlacementActive] = useState<boolean>(false);
+  const [soloBattleStarted, setSoloBattleStarted] = useState<boolean>(false);
   const [soloPlacementDifficulty, setSoloPlacementDifficulty] = useState<BotDifficulty>(
     readStoredDifficulty()
   );
   const [placementDraft, setPlacementDraft] = useState<OnlinePlacementShipDraft[]>(
     () => createOnlinePlacementDraft()
+  );
+  const [soloBattleShipVisuals, setSoloBattleShipVisuals] = useState<SoloBattleShipVisual[]>(
+    []
   );
   const [selectedPlacementShipId, setSelectedPlacementShipId] = useState<string | null>(null);
   const [placementHoverCell, setPlacementHoverCell] = useState<{
@@ -1533,6 +1913,8 @@ export default function Home() {
   const socketRef = useRef<Socket | null>(null);
   const autoJoinTriedRef = useRef(false);
   const impactSoundRef = useRef<HTMLAudioElement | null>(null);
+  const hitShipSoundRef = useRef<HTMLAudioElement | null>(null);
+  const placeShipSoundRef = useRef<HTMLAudioElement | null>(null);
   const themeSoundRef = useRef<HTMLAudioElement | null>(null);
   const hmmSoundRef = useRef<HTMLAudioElement | null>(null);
   const laughSoundRef = useRef<HTMLAudioElement | null>(null);
@@ -1540,10 +1922,22 @@ export default function Home() {
   const missEventCountRef = useRef<number>(0);
   const hitEventCountRef = useRef<number>(0);
   const radarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
+  const defenseRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const onlineRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
+  const onlineDefenseRadarSnapshotRef = useRef<Mark[][]>(createGrid<Mark>("unknown"));
   const enemyShipHitsSnapshotRef = useRef<number[]>(Array.from({ length: FLEET.length }, () => 0));
   const lastPlacementSignatureRef = useRef<string>("");
   const boardFrameRef = useRef<HTMLDivElement | null>(null);
+  const turnSwapTimersRef = useRef<number[]>([]);
+  const [markerSample, setMarkerSample] = useState<{
+    centerX: number;
+    centerY: number;
+    holeSize: number;
+  }>({
+    centerX: CARPET_IMAGE_WIDTH * 0.5,
+    centerY: CARPET_IMAGE_HEIGHT * 0.5,
+    holeSize: 64,
+  });
   const [boardFrameSize, setBoardFrameSize] = useState<{ width: number; height: number }>({
     width: BOARD_FRAME_REFERENCE_WIDTH,
     height: Math.round((BOARD_FRAME_REFERENCE_WIDTH * CARPET_IMAGE_HEIGHT) / CARPET_IMAGE_WIDTH),
@@ -1554,6 +1948,14 @@ export default function Home() {
   const boardFrameScale = useMemo(
     () => clampNumber(boardFrameSize.width / BOARD_FRAME_REFERENCE_WIDTH, 0.2, 3),
     [boardFrameSize.width]
+  );
+  const boardScaleX = useMemo(
+    () => boardFrameSize.width / CARPET_IMAGE_WIDTH,
+    [boardFrameSize.width]
+  );
+  const boardScaleY = useMemo(
+    () => boardFrameSize.height / CARPET_IMAGE_HEIGHT,
+    [boardFrameSize.height]
   );
 
   const socketUrl = useMemo(() => {
@@ -1602,16 +2004,21 @@ export default function Home() {
     pendingPlacementTimerRef.current = null;
   }
 
+  function clearTurnSwapTimers(): void {
+    if (turnSwapTimersRef.current.length === 0) return;
+    for (const timerId of turnSwapTimersRef.current) {
+      window.clearTimeout(timerId);
+    }
+    turnSwapTimersRef.current = [];
+  }
+
   function schedulePlacementCellClick(
     row: number,
     col: number,
     center?: { x: number; y: number }
   ): void {
     clearPendingPlacementTimer();
-    pendingPlacementTimerRef.current = window.setTimeout(() => {
-      pendingPlacementTimerRef.current = null;
-      handlePlacementCellClick(row, col, center);
-    }, PLACEMENT_CLICK_DELAY_MS);
+    handlePlacementCellClick(row, col, center);
   }
 
   useEffect(() => {
@@ -1619,6 +2026,16 @@ export default function Home() {
       if (pendingPlacementTimerRef.current !== null) {
         window.clearTimeout(pendingPlacementTimerRef.current);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (turnSwapTimersRef.current.length === 0) return;
+      for (const timerId of turnSwapTimersRef.current) {
+        window.clearTimeout(timerId);
+      }
+      turnSwapTimersRef.current = [];
     };
   }, []);
 
@@ -1786,6 +2203,16 @@ export default function Home() {
     impactAudio.volume = 0.7;
     impactSoundRef.current = impactAudio;
 
+    const hitShipAudio = new Audio(FALL_SOUND_URL);
+    hitShipAudio.preload = "auto";
+    hitShipAudio.volume = 0.7;
+    hitShipSoundRef.current = hitShipAudio;
+
+    const placeShipAudio = new Audio(FALL_SOUND_URL);
+    placeShipAudio.preload = "auto";
+    placeShipAudio.volume = 0.35;
+    placeShipSoundRef.current = placeShipAudio;
+
     const themeAudio = new Audio(THEME_SOUND_URL);
     themeAudio.preload = "auto";
     themeAudio.loop = true;
@@ -1815,6 +2242,8 @@ export default function Home() {
     return () => {
       for (const ref of [
         impactSoundRef,
+        hitShipSoundRef,
+        placeShipSoundRef,
         themeSoundRef,
         hmmSoundRef,
         laughSoundRef,
@@ -1851,6 +2280,18 @@ export default function Home() {
       // Ignore storage failures.
     }
   }, [isSoundEnabled]);
+
+  useEffect(() => {
+    writeStoredPlacementUiCalibration(placementUiCalibration);
+  }, [placementUiCalibration]);
+
+  useEffect(() => {
+    writeStoredHitMarkerCalibrationMap(hitMarkerCalibrationMap);
+  }, [hitMarkerCalibrationMap]);
+
+  useEffect(() => {
+    writeStoredForkVariantCalibrationMap(forkVariantCalibrationMap);
+  }, [forkVariantCalibrationMap]);
 
   useEffect(() => {
     if (!isStatsOpen) return;
@@ -1912,11 +2353,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) return;
-    if (isLoginModalOpen) {
-      setIsOnlineLobbyOpen(true);
-      setGameMode("online");
-    }
-    setIsLoginModalOpen(false);
+    if (isLoginModalOpen) setIsLoginModalOpen(false);
   }, [authUser, isLoginModalOpen]);
 
   useEffect(() => {
@@ -1988,9 +2425,8 @@ export default function Home() {
         const after = nextRadar[row]?.[col] ?? "unknown";
         if (before !== "unknown" || after === "unknown") continue;
 
-        playSound(impactSoundRef);
-
         if (after === "miss") {
+          playSound(impactSoundRef);
           missEventCountRef.current += 1;
           if (missEventCountRef.current % 3 === 0) {
             playSound(hmmSoundRef);
@@ -1999,8 +2435,11 @@ export default function Home() {
         }
 
         if (after === "hit") {
+          playSound(hitShipSoundRef);
           newHitEffects.push({
-            id: `${Date.now()}-${row}-${col}-${Math.random().toString(16).slice(2, 6)}`,
+            id: `solo-attack-${Date.now()}-${row}-${col}-${Math.random()
+              .toString(16)
+              .slice(2, 6)}`,
             row,
             col,
             startedAtMs: Date.now(),
@@ -2039,6 +2478,7 @@ export default function Home() {
   useEffect(() => {
     if (gameMode !== "online") {
       onlineRadarSnapshotRef.current = createGrid<Mark>("unknown");
+      onlineDefenseRadarSnapshotRef.current = createGrid<Mark>("unknown");
       return;
     }
 
@@ -2052,16 +2492,18 @@ export default function Home() {
         const after = nextRadar[row]?.[col] ?? "unknown";
         if (before !== "unknown" || after === "unknown") continue;
 
-        playSound(impactSoundRef);
         if (after === "hit") {
+          playSound(hitShipSoundRef);
           newHitEffects.push({
-            id: `online-${Date.now()}-${row}-${col}-${Math.random()
+            id: `online-attack-${Date.now()}-${row}-${col}-${Math.random()
               .toString(16)
               .slice(2, 6)}`,
             row,
             col,
             startedAtMs: Date.now(),
           });
+        } else if (after === "miss") {
+          playSound(impactSoundRef);
         }
       }
     }
@@ -2071,16 +2513,99 @@ export default function Home() {
   }, [appendHitEffects, gameMode, playSound, roomView?.playerRadar]);
 
   useEffect(() => {
+    if (gameMode !== "online") {
+      onlineDefenseRadarSnapshotRef.current = createGrid<Mark>("unknown");
+      return;
+    }
+
+    const nextRadar = roomView?.defenseRadar ?? createGrid<Mark>("unknown");
+    const prevRadar = onlineDefenseRadarSnapshotRef.current;
+    const newHitEffects: HitEffect[] = [];
+
+    for (let row = 0; row < BOARD_SIZE; row += 1) {
+      for (let col = 0; col < BOARD_SIZE; col += 1) {
+        const before = prevRadar[row]?.[col] ?? "unknown";
+        const after = nextRadar[row]?.[col] ?? "unknown";
+        if (before !== "unknown" || after === "unknown") continue;
+
+        if (after === "hit") {
+          playSound(hitShipSoundRef);
+          newHitEffects.push({
+            id: `online-defense-${Date.now()}-${row}-${col}-${Math.random()
+              .toString(16)
+              .slice(2, 6)}`,
+            row,
+            col,
+            startedAtMs: Date.now(),
+          });
+        } else if (after === "miss") {
+          playSound(impactSoundRef);
+        }
+      }
+    }
+
+    appendHitEffects(newHitEffects);
+    onlineDefenseRadarSnapshotRef.current = nextRadar.map((row) => row.slice());
+  }, [appendHitEffects, gameMode, playSound, roomView?.defenseRadar]);
+
+  useEffect(() => {
+    if (gameMode !== "solo") {
+      defenseRadarSnapshotRef.current = createGrid<Mark>("unknown");
+      return;
+    }
+
+    const nextRadar = game.botRadar;
+    const prevRadar = defenseRadarSnapshotRef.current;
+    const newHitEffects: HitEffect[] = [];
+
+    for (let row = 0; row < BOARD_SIZE; row += 1) {
+      for (let col = 0; col < BOARD_SIZE; col += 1) {
+        const before = prevRadar[row]?.[col] ?? "unknown";
+        const after = nextRadar[row]?.[col] ?? "unknown";
+        if (before !== "unknown" || after === "unknown") continue;
+
+        if (after === "hit") {
+          playSound(hitShipSoundRef);
+          newHitEffects.push({
+            id: `solo-defense-${Date.now()}-${row}-${col}-${Math.random()
+              .toString(16)
+              .slice(2, 6)}`,
+            row,
+            col,
+            startedAtMs: Date.now(),
+          });
+        } else if (after === "miss") {
+          playSound(impactSoundRef);
+        }
+      }
+    }
+
+    appendHitEffects(newHitEffects);
+    defenseRadarSnapshotRef.current = nextRadar.map((row) => row.slice());
+  }, [appendHitEffects, game.botRadar, gameMode, playSound]);
+
+  useEffect(() => {
     if (gameMode !== "solo") return;
     if (game.turn !== "bot") return;
     if (game.winner !== null) return;
+    if (displayPerspective !== "opponent") return;
+    if (turnSwapPhase !== "stable") return;
+    const botShotDelayMs = game.botShotsLeft >= SHOTS_PER_TURN ? 0 : BOT_TURN_DELAY_MS;
     const timer = window.setTimeout(() => {
-      setGame((prev) => resolveBotSalvo(prev, botDifficulty));
-    }, 720);
+      setGame((prev) => resolveBotSingleShot(prev, botDifficulty));
+    }, botShotDelayMs);
     return () => {
       window.clearTimeout(timer);
     };
-  }, [botDifficulty, game.turn, game.winner, gameMode]);
+  }, [
+    botDifficulty,
+    displayPerspective,
+    game.botShotsLeft,
+    game.turn,
+    game.winner,
+    gameMode,
+    turnSwapPhase,
+  ]);
 
   useEffect(() => {
     if (gameMode !== "solo") return;
@@ -2142,7 +2667,6 @@ export default function Home() {
   const totalWins = history.filter((match) => match.winner === "player").length;
   const totalLosses = totalGames - totalWins;
   const winRate = totalGames > 0 ? Math.round((totalWins / totalGames) * 100) : 0;
-  const showDefenseLayer = game.turn === "bot" || (game.turn === "finished" && game.winner === "bot");
   const onlinePlayerRadar = roomView?.playerRadar ?? createGrid<Mark>("unknown");
   const onlineDefenseRadar = roomView?.defenseRadar ?? createGrid<Mark>("unknown");
   const isOnlinePlacementPhase = gameMode === "online" && roomView?.phase === "placement";
@@ -2161,6 +2685,17 @@ export default function Home() {
       : placementDraft.find((ship) => ship.id === activePlacedVisualShipId) ?? null;
   const selectedPlacementLength = selectedPlacementShip?.length ?? null;
   const selectedPlacementHorizontal = selectedPlacementShip?.horizontal ?? true;
+  const shipSlotRender = useMemo(() => {
+    const scale = placementUiCalibration.shipSlotScale;
+    const widthPct = SHIP_SLOT_WIDTH_PCT * scale;
+    const heightPct = SHIP_SLOT_HEIGHT_PCT * scale;
+    return {
+      leftPct: SHIP_SLOT_CENTER_X_PCT - widthPct / 2,
+      topPct: SHIP_SLOT_CENTER_Y_PCT - heightPct / 2,
+      widthPct,
+      heightPct,
+    };
+  }, [placementUiCalibration.shipSlotScale]);
   const activeUiCalibration = isUiCalibrationMode ? uiCalibrationDraft : uiCalibration;
   const activeShipVisualCalibration = isUiCalibrationMode
     ? shipVisualCalibrationDraft
@@ -2254,25 +2789,160 @@ export default function Home() {
     [onlineDefenseRadar, onlineShipGrid]
   );
   const soloEmptyRadar = useMemo(() => createGrid<Mark>("unknown"), []);
+  const hiddenOwnShipGrid = useMemo(() => createGrid<number>(WATER), []);
+  const desiredPerspective: "player" | "opponent" = useMemo(() => {
+    if (gameMode === "online") {
+      if (roomView?.phase !== "playing" || roomView.winner !== null) return "player";
+      return roomView.yourTurn ? "player" : "opponent";
+    }
+    if (soloPlacementActive || !soloBattleStarted || game.winner !== null || game.turn === "finished") {
+      return "player";
+    }
+    return game.turn === "bot" ? "opponent" : "player";
+  }, [
+    game.turn,
+    game.winner,
+    gameMode,
+    roomView?.phase,
+    roomView?.winner,
+    roomView?.yourTurn,
+    soloBattleStarted,
+    soloPlacementActive,
+  ]);
+  const canAnimatePerspectiveSwap =
+    (gameMode === "solo" &&
+      !soloPlacementActive &&
+      soloBattleStarted &&
+      game.winner === null &&
+      (game.turn === "player" || game.turn === "bot")) ||
+    (gameMode === "online" &&
+      roomView?.phase === "playing" &&
+      roomView?.winner === null &&
+      typeof roomView?.yourTurn === "boolean");
+
+  useEffect(() => {
+    if (!canAnimatePerspectiveSwap) {
+      clearTurnSwapTimers();
+      setDisplayPerspective(desiredPerspective);
+      setTurnSwapPhase("stable");
+      return;
+    }
+    if (desiredPerspective === displayPerspective) return;
+
+    clearTurnSwapTimers();
+    setTurnSwapPhase("waiting");
+    const fadeOutTimer = window.setTimeout(() => {
+      setTurnSwapPhase("fade-out");
+    }, TURN_SWAP_WAIT_MS);
+    const fadeInTimer = window.setTimeout(() => {
+      setDisplayPerspective(desiredPerspective);
+      setTurnSwapPhase("fade-in");
+    }, TURN_SWAP_WAIT_MS + TURN_SWAP_FADE_HALF_MS);
+    const settleTimer = window.setTimeout(() => {
+      setTurnSwapPhase("stable");
+    }, TURN_SWAP_WAIT_MS + TURN_SWAP_FADE_HALF_MS * 2);
+    turnSwapTimersRef.current = [fadeOutTimer, fadeInTimer, settleTimer];
+  }, [canAnimatePerspectiveSwap, desiredPerspective, displayPerspective]);
+
+  const isTurnSwapTransitionActive = canAnimatePerspectiveSwap && turnSwapPhase !== "stable";
+  const isSoloPlayerTurn =
+    gameMode === "solo" &&
+    !soloPlacementActive &&
+    game.winner === null &&
+    displayPerspective === "player";
+  const isSoloOpponentTurn =
+    gameMode === "solo" &&
+    !soloPlacementActive &&
+    game.winner === null &&
+    displayPerspective === "opponent";
+  const isOnlinePlayerTurn =
+    gameMode === "online" &&
+    roomView?.phase === "playing" &&
+    roomView?.winner === null &&
+    displayPerspective === "player";
+  const isOnlineOpponentTurn =
+    gameMode === "online" &&
+    roomView?.phase === "playing" &&
+    roomView?.winner === null &&
+    displayPerspective === "opponent";
   const soloAttackRadar = soloPlacementActive ? soloEmptyRadar : game.playerRadar;
   const soloDefenseRadar = soloPlacementActive ? soloEmptyRadar : game.botRadar;
   const soloShipGrid = soloPlacementActive ? placementDisplayShipGrid : game.playerShipGrid;
-  const soloShowDefenseLayer = soloPlacementActive ? true : showDefenseLayer;
-  const soloCanShoot = !soloPlacementActive && game.turn === "player" && game.winner === null;
+  const soloCanShoot =
+    !soloPlacementActive &&
+    game.turn === "player" &&
+    game.winner === null &&
+    displayPerspective === "player" &&
+    !isTurnSwapTransitionActive;
   const hiddenEnemyShipGrid = useMemo(() => createGrid<number>(WATER), []);
   const hiddenEnemyShipHits = useMemo(() => [] as number[], []);
-  const onlineShowDefenseLayer =
-    roomView?.phase === "playing"
-      ? !roomView.yourTurn
-      : roomView?.phase === "placement"
-      ? true
-      : roomView !== null;
+  const soloAttackRadarView = soloPlacementActive
+    ? soloEmptyRadar
+    : isSoloPlayerTurn
+    ? game.playerRadar
+    : soloEmptyRadar;
+  const soloDefenseRadarView = soloPlacementActive
+    ? soloEmptyRadar
+    : isSoloOpponentTurn
+    ? game.botRadar
+    : soloEmptyRadar;
+  const soloShipGridView = soloPlacementActive
+    ? placementDisplayShipGrid
+    : hiddenOwnShipGrid;
+  const soloShowDefenseLayerView = soloPlacementActive ? true : isSoloOpponentTurn;
+  const soloEnemyShipGridView = hiddenEnemyShipGrid;
+  const soloEnemyShipHitsView = hiddenEnemyShipHits;
+  const onlineAttackRadarView =
+    roomView?.phase === "placement"
+      ? soloEmptyRadar
+      : isOnlinePlayerTurn
+      ? onlinePlayerRadar
+      : soloEmptyRadar;
+  const onlineDefenseRadarView =
+    roomView?.phase === "placement"
+      ? soloEmptyRadar
+      : isOnlineOpponentTurn
+      ? onlineDefenseRadar
+      : soloEmptyRadar;
+  const onlineShipGridView =
+    roomView?.phase === "placement"
+      ? onlineShipGrid
+      : isOnlineOpponentTurn
+      ? roomView?.playerShipGrid ?? hiddenOwnShipGrid
+      : hiddenOwnShipGrid;
+  const onlineShowDefenseLayerView =
+    roomView?.phase === "placement" ? true : isOnlineOpponentTurn;
   const onlineCanShoot =
     gameMode === "online" &&
     socketConnected &&
     roomView?.phase === "playing" &&
     roomView.yourTurn &&
-    roomView.winner === null;
+    roomView.winner === null &&
+    displayPerspective === "player" &&
+    !isTurnSwapTransitionActive;
+  const isOnlinePlaying = gameMode === "online" && roomView?.phase === "playing";
+  const isSoloPlaying = gameMode === "solo" && !soloPlacementActive && game.winner === null;
+  const isSoloBattleActive = isSoloPlaying && soloBattleStarted;
+  const showSoloDefenseShipVisuals =
+    gameMode === "solo" &&
+    !soloPlacementActive &&
+    displayPerspective === "opponent";
+  const isUserBlueSide = gameMode === "online" ? roomView?.youRole !== "guest" : true;
+  const leftHeroActive = isOnlinePlaying
+    ? isUserBlueSide
+      ? displayPerspective === "player"
+      : displayPerspective === "opponent"
+    : isSoloBattleActive && displayPerspective === "player";
+  const rightHeroActive = isOnlinePlaying
+    ? isUserBlueSide
+      ? displayPerspective === "opponent"
+      : displayPerspective === "player"
+    : isSoloBattleActive && displayPerspective === "opponent";
+  const boardBattleOpacity = turnSwapPhase === "fade-out" ? 0 : 1;
+  const boardBattleTransitionMs =
+    turnSwapPhase === "fade-out" || turnSwapPhase === "fade-in"
+      ? TURN_SWAP_FADE_HALF_MS
+      : 0;
   const canStartOnlineMatch =
     roomView?.phase === "lobby" &&
     roomView.youRole === "host" &&
@@ -2287,6 +2957,45 @@ export default function Home() {
     roomView?.phase === "placement" &&
     !roomView.yourPlacementReady &&
     allDraftShipsPlaced(placementDraft);
+  const selectedHitMarkerCalibration =
+    hitMarkerCalibrationMap[selectedHitMarkerId] ?? DEFAULT_HIT_MARKER_CALIBRATION;
+  const selectedForkVariantCalibration =
+    forkVariantCalibrationMap[selectedForkVariantId] ?? DEFAULT_FORK_VARIANT_CALIBRATION;
+  const activeImpactCalibration =
+    impactCalibrationTarget === "hit"
+      ? selectedHitMarkerCalibration
+      : selectedForkVariantCalibration;
+  const menuCalibrationLabels: Record<MenuCalibrationKey, string> = {
+    startButton: "Start",
+    onlineButton: "Online",
+    offlineButton: "Offline",
+    babyButton: "Baby",
+    manButton: "Man",
+    nightmareButton: "Nightmare",
+    soundOnButton: "Sound On",
+    soundButton: "Sound",
+    statButton: "Statistics",
+    leaderButton: "Leaderboard",
+    loginButton: "Login",
+  };
+  const selectedMenuCalibrationRect = uiCalibration[selectedMenuCalibrationKey];
+  const hitMarkerPreviewAnchor = useMemo(
+    () => ({
+      x: markerSample.centerX * boardScaleX,
+      y: markerSample.centerY * boardScaleY,
+    }),
+    [boardScaleX, boardScaleY, markerSample.centerX, markerSample.centerY]
+  );
+  const baseMissMarkerSize = markerSample.holeSize * 2;
+  const baseForkMarkerSize = markerSample.holeSize * 3.8;
+  const hitMarkerPreviewSize =
+    baseMissMarkerSize * selectedHitMarkerCalibration.scale * boardScaleX;
+  const forkPreviewSize =
+    baseForkMarkerSize * selectedForkVariantCalibration.scale * boardScaleX;
+  const activePreviewSize =
+    impactCalibrationTarget === "hit" ? hitMarkerPreviewSize : forkPreviewSize;
+  const hitMarkerPreviewX = hitMarkerPreviewAnchor.x;
+  const hitMarkerPreviewY = hitMarkerPreviewAnchor.y;
   const avgPlayerAccuracy =
     totalGames > 0
       ? Math.round(
@@ -2323,11 +3032,43 @@ export default function Home() {
   const activePlacementOpponentReady = soloPlacementActive
     ? false
     : Boolean(roomView?.opponentPlacementReady);
-  const soloPlacementReady = soloPlacementActive && allDraftShipsPlaced(placementDraft);
   const finalizeSoloPlacement = useCallback((): void => {
     const completedDraft = completeDraftWithAutoPlacement(placementDraft);
-    const placement = placementFromDraft(completedDraft);
-    setPlacementDraft(completedDraft);
+    const completedDraftWithVisuals = completedDraft.map((ship) => {
+      if (!ship.placed || ship.visual) return ship;
+      const centerCol = ship.col + (ship.horizontal ? ship.length / 2 : 0.5);
+      const centerRow = ship.row + (ship.horizontal ? 0.5 : ship.length / 2);
+      const imageCenter = {
+        x: (centerCol / BOARD_SIZE) * CARPET_IMAGE_WIDTH,
+        y: (centerRow / BOARD_SIZE) * CARPET_IMAGE_HEIGHT,
+      };
+      const frameCenter =
+        convertBoardCenterToFramePx(imageCenter, boardFrameRef.current) ?? {
+          x: (imageCenter.x / CARPET_IMAGE_WIDTH) * boardFrameSize.width,
+          y: (imageCenter.y / CARPET_IMAGE_HEIGHT) * boardFrameSize.height,
+        };
+      return {
+        ...ship,
+        visual: buildPlacedShipVisual(
+          ship.length,
+          ship.horizontal ? "horizontal" : "vertical",
+          frameCenter
+        ),
+        visualLocked: true,
+      };
+    });
+    const placement = placementFromDraft(completedDraftWithVisuals);
+    setPlacementDraft(completedDraftWithVisuals);
+    setSoloBattleShipVisuals(
+      completedDraftWithVisuals
+        .filter((ship) => ship.placed && ship.visual)
+        .map((ship) => ({
+          id: ship.id,
+          length: ship.length,
+          horizontal: ship.horizontal,
+          visual: ship.visual as PlacementShipVisual,
+        }))
+    );
     setSoloPlacementActive(false);
     setSelectedPlacementShipId(null);
     setPlacementHoverCell(null);
@@ -2335,18 +3076,26 @@ export default function Home() {
     lastPointerPosRef.current = null;
     setActivePlacedVisualShipId(null);
     setPlacedShipVisualDragState(null);
+    setSoloBattleStarted(true);
     setGame(createGameState(soloPlacementDifficulty, placement));
-  }, [placementDraft, soloPlacementDifficulty]);
+  }, [boardFrameSize.height, boardFrameSize.width, placementDraft, soloPlacementDifficulty]);
+
+  useEffect(() => {
+    if (!soloPlacementActive) return;
+    if (!allDraftShipsPlaced(placementDraft)) return;
+    finalizeSoloPlacement();
+  }, [finalizeSoloPlacement, placementDraft, soloPlacementActive]);
 
   useEffect(() => {
     if (gameMode !== "solo") return;
     radarSnapshotRef.current = game.playerRadar.map((row) => row.slice());
+    defenseRadarSnapshotRef.current = game.botRadar.map((row) => row.slice());
     enemyShipHitsSnapshotRef.current = [...game.enemyShipHits];
     missEventCountRef.current = 0;
     hitEventCountRef.current = 0;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     resetHitEffects();
-  }, [game.enemyShipHits, game.id, game.playerRadar, resetHitEffects, gameMode]);
+  }, [game.id, resetHitEffects, gameMode]);
 
   useEffect(() => {
     shipVisualCalibrationDraftRef.current = cloneShipVisualCalibrationMap(
@@ -2420,14 +3169,78 @@ export default function Home() {
     setPlacedShipVisualDragState(null);
   }, [isPlacementInteractionActive]);
 
+  useEffect(() => {
+    if (gameMode !== "solo") return;
+    if (displayPerspective !== "opponent") return;
+    if (soloPlacementActive) return;
+    if (game.winner !== null) return;
+    setPlacementDraft((prev) => {
+      let changed = false;
+      const next = prev.map((ship) => {
+        if (!ship.placed || ship.visual) return ship;
+        const centerCol = ship.col + (ship.horizontal ? ship.length / 2 : 0.5);
+        const centerRow = ship.row + (ship.horizontal ? 0.5 : ship.length / 2);
+        const imageCenter = {
+          x: (centerCol / BOARD_SIZE) * CARPET_IMAGE_WIDTH,
+          y: (centerRow / BOARD_SIZE) * CARPET_IMAGE_HEIGHT,
+        };
+        const frameCenter =
+          convertBoardCenterToFramePx(imageCenter, boardFrameRef.current) ?? {
+            x: (imageCenter.x / CARPET_IMAGE_WIDTH) * boardFrameSize.width,
+            y: (imageCenter.y / CARPET_IMAGE_HEIGHT) * boardFrameSize.height,
+          };
+        changed = true;
+        return {
+          ...ship,
+          visual: buildPlacedShipVisual(
+            ship.length,
+            ship.horizontal ? "horizontal" : "vertical",
+            frameCenter
+          ),
+          visualLocked: true,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [
+    boardFrameSize.height,
+    boardFrameSize.width,
+    displayPerspective,
+    game.winner,
+    gameMode,
+    soloPlacementActive,
+  ]);
+
+  useEffect(() => {
+    if (gameMode !== "solo") return;
+    if (!soloBattleStarted) return;
+    if (soloBattleShipVisuals.length > 0) return;
+    const fromDraft = placementDraft
+      .filter((ship) => ship.placed && ship.visual)
+      .map((ship) => ({
+        id: ship.id,
+        length: ship.length,
+        horizontal: ship.horizontal,
+        visual: ship.visual as PlacementShipVisual,
+      }));
+    if (fromDraft.length > 0) {
+      setSoloBattleShipVisuals(fromDraft);
+    }
+  }, [gameMode, placementDraft, soloBattleShipVisuals.length, soloBattleStarted]);
+
   function resetGame(nextDifficulty?: BotDifficulty): void {
     clearPendingPlacementTimer();
+    clearTurnSwapTimers();
+    setTurnSwapPhase("stable");
+    setDisplayPerspective("player");
     const difficulty = nextDifficulty ?? botDifficulty;
     setGame(createGameState(difficulty));
     setCoachReport(null);
     setHitEffects([]);
     setGameMode("solo");
     setSoloPlacementActive(false);
+    setSoloBattleStarted(false);
+    setSoloBattleShipVisuals([]);
     lastPointerPosRef.current = null;
     setActivePlacedVisualShipId(null);
     setPlacedShipVisualDragState(null);
@@ -2435,10 +3248,15 @@ export default function Home() {
 
   function beginSoloPlacement(nextDifficulty: BotDifficulty): void {
     clearPendingPlacementTimer();
+    clearTurnSwapTimers();
+    setTurnSwapPhase("stable");
+    setDisplayPerspective("player");
     setBotDifficulty(nextDifficulty);
     setSoloPlacementDifficulty(nextDifficulty);
     setGameMode("solo");
     setSoloPlacementActive(true);
+    setSoloBattleStarted(false);
+    setSoloBattleShipVisuals([]);
     setPlacementDraft(createOnlinePlacementDraft());
     setSelectedPlacementShipId(null);
     setPlacementHoverCell(null);
@@ -2577,6 +3395,53 @@ export default function Home() {
     selectShipForPlacement(nextUnplaced.id);
   }
 
+  function cancelSelectedPlacementShip(): void {
+    clearPendingPlacementTimer();
+    setSelectedPlacementShipId(null);
+    setPlacementHoverCell(null);
+    setPlacementCursorPos(null);
+  }
+
+  function pickPlacedShipForMove(shipId: string): void {
+    if (!isPlacementInteractionActive || isUiCalibrationMode) return;
+    if (selectedPlacementShipId !== null) return;
+    const ship = placementDraft.find((item) => item.id === shipId);
+    if (!ship || !ship.placed) return;
+    setSelectedPlacementShipId(shipId);
+    setPlacementHoverCell(null);
+    setPlacementCursorPos(null);
+  }
+
+  function rotatePlacedShipForMove(shipId: string): void {
+    if (!isPlacementInteractionActive || isUiCalibrationMode) return;
+    if (selectedPlacementShipId !== null) return;
+    const ship = placementDraft.find((item) => item.id === shipId);
+    if (!ship || !ship.placed) return;
+    clearPendingPlacementTimer();
+    const previousVisual = ship.visual;
+    setPlacementDraft((prev) =>
+      prev.map((item) =>
+        item.id === shipId
+          ? {
+              ...item,
+              horizontal: !item.horizontal,
+              placed: false,
+              visual: undefined,
+              visualLocked: false,
+            }
+          : item
+      )
+    );
+    setSelectedPlacementShipId(shipId);
+    setPlacementHoverCell(null);
+    const nextCursorPos =
+      previousVisual !== undefined
+        ? { x: previousVisual.x, y: previousVisual.y }
+        : null;
+    setPlacementCursorPos(nextCursorPos);
+    lastPointerPosRef.current = nextCursorPos;
+  }
+
   function submitPlacementIfReady(nextDraft: OnlinePlacementShipDraft[]): void {
     if (!roomView || roomView.phase !== "placement") return;
     if (roomView.yourPlacementReady) return;
@@ -2666,6 +3531,7 @@ export default function Home() {
           }
         : ship
     );
+    playSound(placeShipSoundRef);
     setPlacementDraft(next);
     setSelectedPlacementShipId(null);
     setPlacementHoverCell(null);
@@ -2673,6 +3539,20 @@ export default function Home() {
       submitPlacementIfReady(next);
     }
   }
+
+  useEffect(() => {
+    if (!isPlacementInteractionActive || isUiCalibrationMode) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      if (selectedPlacementShipId === null) return;
+      event.preventDefault();
+      cancelSelectedPlacementShip();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isPlacementInteractionActive, isUiCalibrationMode, selectedPlacementShipId]);
 
   function handleOnlineShot(row: number, col: number): void {
     if (!onlineCanShoot) return;
@@ -2736,8 +3616,8 @@ export default function Home() {
     playButtonClickSound();
     setStartPanel(null);
     if (!authUser) {
-      setOnlineNotice("Login with Google first.");
-      setIsLoginModalOpen(true);
+      setOnlineNotice("Authorize with Google first.");
+      void handleGoogleLogin();
       return;
     }
     setIsOnlineLobbyOpen(true);
@@ -2747,7 +3627,7 @@ export default function Home() {
   function openLoginModal(): void {
     playButtonClickSound();
     setIsMenuOpen(false);
-    setIsLoginModalOpen(true);
+    void handleGoogleLogin();
   }
 
   function handleOfflineModeClick(): void {
@@ -2759,6 +3639,27 @@ export default function Home() {
   function handleLevelChoice(nextDifficulty: BotDifficulty): void {
     playButtonClickSound();
     beginSoloPlacement(nextDifficulty);
+    setStartPanel(null);
+  }
+
+  function handleQuickSoloStart(nextDifficulty: BotDifficulty): void {
+    playButtonClickSound();
+    clearPendingPlacementTimer();
+    setBotDifficulty(nextDifficulty);
+    setSoloPlacementDifficulty(nextDifficulty);
+    setGameMode("solo");
+    setSoloPlacementActive(false);
+    setSoloBattleStarted(true);
+    setPlacementDraft(createOnlinePlacementDraft());
+    setSelectedPlacementShipId(null);
+    setPlacementHoverCell(null);
+    setPlacementCursorPos(null);
+    lastPointerPosRef.current = null;
+    setActivePlacedVisualShipId(null);
+    setPlacedShipVisualDragState(null);
+    setCoachReport(null);
+    setHitEffects([]);
+    setGame(createGameState(nextDifficulty));
     setStartPanel(null);
   }
 
@@ -2814,8 +3715,8 @@ export default function Home() {
 
   function createOnlineRoom(): void {
     if (!authUser) {
-      setOnlineNotice("Login with Google first.");
-      setIsLoginModalOpen(true);
+      setOnlineNotice("Authorize with Google first.");
+      void handleGoogleLogin();
       return;
     }
     if (!socketConnected) return;
@@ -2831,8 +3732,8 @@ export default function Home() {
 
   function joinOnlineRoom(): void {
     if (!authUser) {
-      setOnlineNotice("Login with Google first.");
-      setIsLoginModalOpen(true);
+      setOnlineNotice("Authorize with Google first.");
+      void handleGoogleLogin();
       return;
     }
     if (!socketConnected) return;
@@ -2857,8 +3758,8 @@ export default function Home() {
 
   function quickFindOnline(): void {
     if (!authUser) {
-      setOnlineNotice("Login with Google first.");
-      setIsLoginModalOpen(true);
+      setOnlineNotice("Authorize with Google first.");
+      void handleGoogleLogin();
       return;
     }
     if (!socketConnected) return;
@@ -3029,13 +3930,164 @@ export default function Home() {
     setPlacedShipVisualDragState(null);
   }
 
+  function updatePlacementUiCalibration(patch: Partial<PlacementUiCalibration>): void {
+    setPlacementUiCalibration((prev) =>
+      normalizePlacementUiCalibration({
+        ...prev,
+        ...patch,
+      })
+    );
+  }
+
+  function updateMenuCalibrationRect(
+    key: MenuCalibrationKey,
+    patch: Partial<CalibrationRect>
+  ): void {
+    setUiCalibration((prev) => {
+      const next = normalizeUiCalibration({
+        ...prev,
+        [key]: {
+          ...prev[key],
+          ...patch,
+        },
+      });
+      if (typeof window !== "undefined") {
+        localStorage.setItem(UI_CALIBRATION_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+    setUiCalibrationDraft((prev) =>
+      normalizeUiCalibration({
+        ...prev,
+        [key]: {
+          ...prev[key],
+          ...patch,
+        },
+      })
+    );
+  }
+
+  const updateHitMarkerCalibration = useCallback(
+    (id: HitMarkerId, patch: Partial<HitMarkerCalibration>): void => {
+      setHitMarkerCalibrationMap((prev) => ({
+        ...prev,
+        [id]: normalizeHitMarkerCalibration({
+          ...(prev[id] ?? DEFAULT_HIT_MARKER_CALIBRATION),
+          ...patch,
+        }),
+      }));
+    },
+    []
+  );
+
+  const updateForkVariantCalibration = useCallback(
+    (id: ForkVariantId, patch: Partial<ForkVariantCalibration>): void => {
+      setForkVariantCalibrationMap((prev) => ({
+        ...prev,
+        [id]: normalizeForkVariantCalibration({
+          ...(prev[id] ?? DEFAULT_FORK_VARIANT_CALIBRATION),
+          ...patch,
+        }),
+      }));
+    },
+    []
+  );
+
+  function beginHitMarkerDrag(
+    mode: "move" | "scale",
+    event: ReactPointerEvent<HTMLDivElement | HTMLButtonElement>
+  ): void {
+    if (!isImpactCalibrationOpen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const current =
+      impactCalibrationTarget === "hit"
+        ? selectedHitMarkerCalibration
+        : selectedForkVariantCalibration;
+    setHitMarkerDragState({
+      target: impactCalibrationTarget,
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffsetXPx: current.offsetXPx,
+      startOffsetYPx: current.offsetYPx,
+      startScale: current.scale,
+    });
+  }
+
+  useEffect(() => {
+    if (!hitMarkerDragState) return;
+    if (!isImpactCalibrationOpen) {
+      setHitMarkerDragState(null);
+      return;
+    }
+    const onMove = (event: PointerEvent): void => {
+      const dx = event.clientX - hitMarkerDragState.startClientX;
+      const dy = event.clientY - hitMarkerDragState.startClientY;
+      if (hitMarkerDragState.mode === "move") return;
+      const avgScale = Math.max(0.01, (boardScaleX + boardScaleY) / 2);
+      const nextScale = hitMarkerDragState.startScale + (dx + dy) / (220 * avgScale);
+      if (hitMarkerDragState.target === "hit") {
+        updateHitMarkerCalibration(selectedHitMarkerId, { scale: nextScale });
+      } else {
+        updateForkVariantCalibration(selectedForkVariantId, { scale: nextScale });
+      }
+    };
+    const onUp = (): void => {
+      setHitMarkerDragState(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [
+    boardScaleX,
+    boardScaleY,
+    hitMarkerDragState,
+    isImpactCalibrationOpen,
+    impactCalibrationTarget,
+    selectedForkVariantId,
+    selectedHitMarkerId,
+    selectedForkVariantCalibration,
+    updateForkVariantCalibration,
+    updateHitMarkerCalibration,
+    selectedHitMarkerCalibration,
+  ]);
+
+  function resetFocusedCalibration(): void {
+    setPlacementUiCalibration({ ...DEFAULT_PLACEMENT_UI_CALIBRATION });
+  }
+
+  function resetImpactCalibration(): void {
+    setHitMarkerCalibrationMap(createDefaultHitMarkerCalibrationMap());
+    setForkVariantCalibrationMap(createDefaultForkVariantCalibrationMap());
+  }
+
+  function handleImpactPreviewCenterPick(
+    event: ReactPointerEvent<HTMLDivElement>
+  ): void {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const centerXPct = ((event.clientX - rect.left) / rect.width) * 100;
+    const centerYPct = ((event.clientY - rect.top) / rect.height) * 100;
+    if (impactCalibrationTarget === "hit") {
+      updateHitMarkerCalibration(selectedHitMarkerId, { centerXPct, centerYPct });
+      return;
+    }
+    updateForkVariantCalibration(selectedForkVariantId, { centerXPct, centerYPct });
+  }
+
   function updateCalibrationRect(
     key:
+      | "startButton"
       | "onlineButton"
       | "offlineButton"
       | "babyButton"
       | "manButton"
       | "nightmareButton"
+      | "soundOnButton"
       | "soundButton"
       | "statButton"
       | "leaderButton"
@@ -3113,6 +4165,10 @@ export default function Home() {
     const thickness = Math.max(12 * scale, gameplayCalibration.thicknessPx * scale);
     const width = orientation === "horizontal" ? longSide : thickness;
     const height = orientation === "horizontal" ? thickness : longSide;
+    const horizontalHalfDeckShift =
+      !isUiCalibrationMode && orientation === "horizontal" && (length === 2 || length === 4)
+        ? -0.5 * gameplayCalibration.deckSizePx * scale
+        : 0;
     let base: { x: number; y: number };
     if (isUiCalibrationMode) {
       if (boardFrameRef.current) {
@@ -3132,7 +4188,7 @@ export default function Home() {
     return {
       baseX: base.x,
       baseY: base.y,
-      x: base.x + gameplayCalibration.offsetXPx * scale,
+      x: base.x + gameplayCalibration.offsetXPx * scale + horizontalHalfDeckShift,
       y: base.y + gameplayCalibration.offsetYPx * scale,
       width,
       height,
@@ -3239,7 +4295,11 @@ export default function Home() {
           <div
             ref={boardFrameRef}
             className="relative overflow-hidden"
-            style={{ width: "min(95vw, calc(90dvh * 1.3333), 1860px)" }}
+            style={{
+              width: "min(95vw, calc(90dvh * 1.3333), 1860px)",
+              transform: `rotate(${BOARD_ROTATION_DEG}deg)`,
+              transformOrigin: "50% 50%",
+            }}
             onPointerDownCapture={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
               lastPointerPosRef.current = {
@@ -3283,38 +4343,50 @@ export default function Home() {
               );
             }}
           >
-            <CarpetBoard
-              attackRadar={gameMode === "online" ? onlinePlayerRadar : soloAttackRadar}
-              defenseRadar={gameMode === "online" ? onlineDefenseRadar : soloDefenseRadar}
-              shipGrid={gameMode === "online" ? onlineShipGrid : soloShipGrid}
-              playerShipHits={gameMode === "online" ? onlineShipHits : game.playerShipHits}
-              enemyShipGrid={
-                gameMode === "online" ? hiddenEnemyShipGrid : game.enemyShipGrid
-              }
-              enemyShipHits={
-                gameMode === "online" ? hiddenEnemyShipHits : game.enemyShipHits
-              }
-              hitEffects={hitEffects}
-              showDefenseLayer={
-                gameMode === "online" ? onlineShowDefenseLayer : soloShowDefenseLayer
-              }
-              canShoot={
-                gameMode === "online"
-                  ? Boolean(onlineCanShoot)
-                  : soloCanShoot
-              }
-              onCellClick={handleCellClick}
-              waterValue={WATER}
-              showSetupUi={false}
-              containerClassName="mx-auto w-full max-w-none"
-              enableHandStrike={false}
-              calibrationStorageKey="sea-war.carpet-board-boundary.v3"
-              placementMode={Boolean(isPlacementInteractionActive)}
-              placementHighlights={placementHighlights}
-              onPlacementCellHover={handlePlacementHover}
-              onPlacementLeave={handlePlacementLeave}
-              onPlacementRotate={togglePlacementOrientation}
-            />
+            <div
+              style={{
+                opacity: boardBattleOpacity,
+                pointerEvents: isTurnSwapTransitionActive ? "none" : "auto",
+                transition: `opacity ${boardBattleTransitionMs}ms ease`,
+              }}
+            >
+              <CarpetBoard
+                attackRadar={gameMode === "online" ? onlineAttackRadarView : soloAttackRadarView}
+                defenseRadar={gameMode === "online" ? onlineDefenseRadarView : soloDefenseRadarView}
+                shipGrid={gameMode === "online" ? onlineShipGridView : soloShipGridView}
+                playerShipHits={gameMode === "online" ? onlineShipHits : game.playerShipHits}
+                enemyShipGrid={
+                  gameMode === "online" ? hiddenEnemyShipGrid : soloEnemyShipGridView
+                }
+                enemyShipHits={
+                  gameMode === "online" ? hiddenEnemyShipHits : soloEnemyShipHitsView
+                }
+                hitEffects={hitEffects}
+                showDefenseLayer={
+                  gameMode === "online" ? onlineShowDefenseLayerView : soloShowDefenseLayerView
+                }
+                canShoot={
+                  gameMode === "online"
+                    ? Boolean(onlineCanShoot)
+                    : soloCanShoot
+                }
+                onCellClick={handleCellClick}
+                waterValue={WATER}
+                showSetupUi={false}
+                containerClassName="mx-auto w-full max-w-none"
+                enableHandStrike={false}
+                calibrationStorageKey="sea-war.carpet-board-boundary.v3"
+                placementMode={Boolean(isPlacementInteractionActive)}
+                placementHighlights={placementHighlights}
+                onPlacementCellHover={handlePlacementHover}
+                onPlacementLeave={handlePlacementLeave}
+                onPlacementRotate={togglePlacementOrientation}
+                hitMarkerCalibrationMap={hitMarkerCalibrationMap}
+                forkVariantCalibrationMap={forkVariantCalibrationMap}
+                showMarkerDebugBoxes={false}
+                onMarkerSampleChange={setMarkerSample}
+              />
+            </div>
 
             <Image
               src={UI_LOGO_URL}
@@ -3324,31 +4396,129 @@ export default function Home() {
               className="pointer-events-none absolute left-[1.5%] top-[1.8%] w-[22%] max-w-[320px] select-none"
             />
 
+            {isImpactCalibrationOpen && (
+              <>
+                <div className="absolute left-1/2 top-[5.4%] z-[52] flex -translate-x-1/2 items-center gap-1 rounded-md border border-cyan-400/50 bg-black/65 px-2 py-1">
+                  {impactCalibrationTarget === "hit"
+                    ? HIT_MARKER_IDS.map((id) => (
+                        <button
+                          key={`hit-palette-${id}`}
+                          type="button"
+                          onClick={() => setSelectedHitMarkerId(id)}
+                          className={`relative h-10 w-10 rounded border ${
+                            selectedHitMarkerId === id
+                              ? "border-emerald-300 bg-emerald-500/20"
+                              : "border-cyan-900/70 bg-black/45"
+                          }`}
+                          title={`Hit ${id}`}
+                        >
+                          <img
+                            src={`/sprites/hit-variants/${id}.png`}
+                            alt=""
+                            className="pointer-events-none h-full w-full object-contain"
+                          />
+                        </button>
+                      ))
+                    : FORK_VARIANT_IDS.map((id) => (
+                        <button
+                          key={`fork-palette-${id}`}
+                          type="button"
+                          onClick={() => setSelectedForkVariantId(id)}
+                          className={`relative h-10 w-10 rounded border ${
+                            selectedForkVariantId === id
+                              ? "border-emerald-300 bg-emerald-500/20"
+                              : "border-cyan-900/70 bg-black/45"
+                          }`}
+                          title={`Fork ${id}`}
+                        >
+                          <img
+                            src={resolveForkHref(forkVariantCalibrationMap[id].href)}
+                            alt=""
+                            className="pointer-events-none h-full w-full object-contain"
+                            onError={(event) => {
+                              event.currentTarget.src = DEFAULT_FORK_IMAGE_HREF;
+                            }}
+                          />
+                        </button>
+                      ))}
+                </div>
+                <div
+                  className="group absolute z-[53] cursor-move"
+                  onClick={handleImpactPreviewCenterPick}
+                  style={{
+                    left: `${hitMarkerPreviewX}px`,
+                    top: `${hitMarkerPreviewY}px`,
+                    width: `${activePreviewSize}px`,
+                    height: `${activePreviewSize}px`,
+                    transform: "translate(-50%, -50%)",
+                    filter: "drop-shadow(0 4px 8px rgba(0,0,0,0.45))",
+                  }}
+                >
+                  <img
+                    src={
+                      impactCalibrationTarget === "hit"
+                        ? `/sprites/hit-variants/${selectedHitMarkerId}.png`
+                        : resolveForkHref(selectedForkVariantCalibration.href)
+                    }
+                    alt=""
+                    className="pointer-events-none h-full w-full object-contain"
+                    onError={(event) => {
+                      event.currentTarget.src = DEFAULT_FORK_IMAGE_HREF;
+                    }}
+                    style={{
+                      opacity: activeImpactCalibration.opacity,
+                      transform:
+                        impactCalibrationTarget === "fork"
+                          ? `rotate(${selectedForkVariantCalibration.rotationDeg}deg)`
+                          : undefined,
+                    }}
+                  />
+                  <div
+                    className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-amber-200 bg-amber-400/90"
+                    style={{
+                      left: `${activeImpactCalibration.centerXPct}%`,
+                      top: `${activeImpactCalibration.centerYPct}%`,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="absolute -bottom-2 -right-2 h-4 w-4 rounded-full border border-cyan-100 bg-cyan-500/90 opacity-0 transition group-hover:opacity-100"
+                    title="Resize"
+                    onPointerDown={(event) => beginHitMarkerDrag("scale", event)}
+                  />
+                </div>
+              </>
+            )}
+
             {isPlacementInteractionActive && (
               <div
-                className="absolute z-40 flex w-[15.8%] min-w-[170px] max-w-[290px] flex-col gap-1.5"
+                className="pointer-events-none absolute z-40 flex min-w-[280px] max-w-[680px] flex-col"
                 style={{
-                  left: "1.6%",
-                  top: "calc(1.8% + min(22vw, 320px) * 0.56 + 20px)",
+                  left: `${placementUiCalibration.panelLeftPct}%`,
+                  top: `${placementUiCalibration.panelTopPct}%`,
+                  width: `${placementUiCalibration.panelWidthPct}%`,
+                  gap: `${Math.max(0, placementUiCalibration.panelGapPx)}px`,
                 }}
               >
-                {PLACEMENT_SHIP_TYPES.map((length) => {
+                {PLACEMENT_SHIP_TYPES.map((length, index) => {
                   const shipsOfType = placementDraft.filter((ship) => ship.length === length);
                   const representativeShip = shipsOfType[0];
                   if (!representativeShip) return null;
                   const placedCount = shipsOfType.filter((ship) => ship.placed).length;
                   const totalCount = shipsOfType.length;
+                  const negativeRowGap = Math.min(0, placementUiCalibration.panelGapPx);
 
                   if (isUiCalibrationMode) {
                     const blocked =
                       activePlacedVisualShipId !== null &&
                       activeCalibrationShip?.length !== length;
                     return (
-                      <div key={`placement-ship-type-${length}`} className="space-y-1">
-                        <div className="text-[10px] font-semibold text-[#e8d4b0]">
-                          Ship {length}
-                        </div>
-                        <div className="grid grid-cols-2 gap-1">
+                      <div
+                        key={`placement-ship-type-${length}`}
+                        className="space-y-0"
+                        style={index > 0 && negativeRowGap < 0 ? { marginTop: `${negativeRowGap}px` } : undefined}
+                      >
+                        <div className="pointer-events-auto grid w-[56%] grid-cols-2 gap-0.5 rounded border border-amber-200/55">
                           {[true, false].map((horizontal) => {
                             const selected =
                               selectedPlacementLength === length &&
@@ -3365,8 +4535,8 @@ export default function Home() {
                                     horizontal ? "horizontal" : "vertical"
                                   );
                                 }}
-                                className={`relative aspect-[4/1.2] w-full rounded transition ${
-                                  selected ? "scale-[1.03] ring-2 ring-emerald-300/90" : ""
+                                className={`relative aspect-[4/0.92] w-full rounded transition ${
+                                  selected ? "scale-[1.03]" : ""
                                 } ${
                                   blocked
                                     ? "cursor-not-allowed opacity-60"
@@ -3374,13 +4544,24 @@ export default function Home() {
                                 }`}
                                 title={`${horizontal ? "Horizontal" : "Vertical"} ship ${length}`}
                               >
-                                <Image
-                                  src={getShipIconByOrientation(length, horizontal)}
-                                  alt={`Ship ${length} ${horizontal ? "horizontal" : "vertical"}`}
-                                  fill
-                                  sizes="260px"
-                                  className="object-contain"
-                                />
+                                  <div
+                                   className="absolute rounded transition"
+                                   style={{
+                                     left: `${shipSlotRender.leftPct}%`,
+                                     top: `${shipSlotRender.topPct}%`,
+                                     width: `${shipSlotRender.widthPct}%`,
+                                     height: `${shipSlotRender.heightPct}%`,
+                                  }}
+                                >
+                                  <Image
+                                    src={getShipIconByOrientation(length, horizontal)}
+                                    alt={`Ship ${length} ${horizontal ? "horizontal" : "vertical"}`}
+                                    fill
+                                    sizes="220px"
+                                    className="object-contain"
+                                    style={{ filter: "drop-shadow(0 2px 5px rgba(0,0,0,0.45))" }}
+                                  />
+                                </div>
                               </button>
                             );
                           })}
@@ -3393,14 +4574,18 @@ export default function Home() {
                   const allPlaced = placedCount >= totalCount;
                   const displayHorizontal = selected ? selectedPlacementHorizontal : true;
                   return (
-                    <div key={`placement-ship-type-${length}`} className="space-y-1">
+                    <div
+                      key={`placement-ship-type-${length}`}
+                      className="space-y-0"
+                      style={index > 0 && negativeRowGap < 0 ? { marginTop: `${negativeRowGap}px` } : undefined}
+                    >
                       <button
                         type="button"
                         disabled={!isPlacementInteractionActive || allPlaced}
                         onClick={() => {
                           selectNextShipTypeForPlacement(length);
                         }}
-                        className={`relative aspect-[4/1.2] w-full transition ${
+                        className={`pointer-events-auto relative aspect-[4/0.92] w-[62%] transition ${
                           selected ? "scale-[1.04]" : "scale-100"
                         } ${placedCount > 0 ? "opacity-100" : "opacity-85"} ${
                           !isPlacementInteractionActive || allPlaced
@@ -3409,50 +4594,39 @@ export default function Home() {
                         }`}
                         title={`Ship ${length} cells (${placedCount}/${totalCount})`}
                       >
-                        <Image
-                          src={getShipIconByOrientation(length, displayHorizontal)}
-                          alt={`Ship ${length}`}
-                          fill
-                          sizes="260px"
-                          className="object-contain"
-                        />
-                        {placedCount > 0 && (
-                          <span className="pointer-events-none absolute -right-1 -top-1 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[10px] font-semibold text-[#0c2312]">
-                            {placedCount}/{totalCount}
-                          </span>
-                        )}
+                        <div
+                          className="absolute rounded"
+                          style={{
+                            left: `${shipSlotRender.leftPct}%`,
+                            top: `${shipSlotRender.topPct}%`,
+                            width: `${shipSlotRender.widthPct}%`,
+                            height: `${shipSlotRender.heightPct}%`,
+                          }}
+                        >
+                          <Image
+                            src={getShipIconByOrientation(length, displayHorizontal)}
+                            alt={`Ship ${length}`}
+                            fill
+                            sizes="220px"
+                            className="object-contain"
+                            style={{ filter: "drop-shadow(0 2px 5px rgba(0,0,0,0.45))" }}
+                          />
+                        </div>
+                        <span
+                          className="pointer-events-none absolute rounded-full bg-emerald-500 px-1.5 py-0.5 text-[10px] font-semibold text-[#0c2312]"
+                          style={{
+                            left: `calc(83% + ${placementUiCalibration.badgeOffsetXPx}px)`,
+                            top: `calc(50% + ${placementUiCalibration.badgeOffsetYPx}px)`,
+                            transform: `translate(-50%, -50%) scale(${placementUiCalibration.badgeScale})`,
+                            transformOrigin: "center",
+                          }}
+                        >
+                          {placedCount}/{totalCount}
+                        </span>
                       </button>
                     </div>
                   );
                 })}
-                <div className="mt-1 rounded-md border border-[#5f4a2d] bg-black/45 px-2 py-1 text-[11px] text-[#eddcb8]">
-                  {isUiCalibrationMode ? (
-                    <div>
-                      {activePlacedVisualShipId !== null
-                        ? `Adjust ship ${activeCalibrationShip?.length ?? ""}, then press Save.`
-                        : "Select horizontal or vertical variant on the left to calibrate."}
-                    </div>
-                  ) : soloPlacementActive ? (
-                    <div>
-                      Select ship, click to place after a short delay. Double-click or right-click rotates ship.
-                    </div>
-                  ) : (
-                    <div>
-                      You: {activePlacementYouReady ? "ready" : "placing"} | Opponent:{" "}
-                      {activePlacementOpponentReady ? "ready" : "placing"}
-                    </div>
-                  )}
-                </div>
-                {soloPlacementActive && (
-                  <button
-                    type="button"
-                    onClick={finalizeSoloPlacement}
-                    disabled={!soloPlacementReady}
-                    className="mt-1 rounded-md border border-emerald-500/70 bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-100 transition hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    Start Battle
-                  </button>
-                )}
               </div>
             )}
 
@@ -3467,10 +4641,26 @@ export default function Home() {
                 .map((ship) => {
                   const visual = ship.visual as PlacementShipVisual;
                   const editing = isUiCalibrationMode && activePlacedVisualShipId === ship.id;
+                  const canPickForMove =
+                    !isUiCalibrationMode &&
+                    selectedPlacementShipId === null &&
+                    isPlacementInteractionActive;
+                  const showRotateControl = canPickForMove;
+                  const rotateButtonSizePx = clampNumber(
+                    Math.min(visual.width, visual.height) * 0.48,
+                    12,
+                    24
+                  );
                   return (
                     <div
                       key={`placed-visual-${ship.id}`}
-                      className={`${editing ? "absolute z-[47]" : "pointer-events-none absolute z-[45]"}`}
+                      className={`group absolute ${editing ? "z-[47]" : "z-[45]"} ${
+                        canPickForMove ? "cursor-pointer" : "pointer-events-none"
+                      }`}
+                      onClick={() => {
+                        if (!canPickForMove) return;
+                        pickPlacedShipForMove(ship.id);
+                      }}
                       style={{
                         width: `${visual.width}px`,
                         height: `${visual.height}px`,
@@ -3493,6 +4683,25 @@ export default function Home() {
                           ),
                         }}
                       />
+                      {showRotateControl && (
+                        <button
+                          type="button"
+                          className="pointer-events-auto absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-amber-200/90 bg-amber-500/20 text-[9px] font-semibold uppercase tracking-wide text-amber-100 opacity-0 transition group-hover:opacity-100 hover:scale-105 hover:bg-amber-500/45"
+                          style={{
+                            width: `${rotateButtonSizePx}px`,
+                            height: `${rotateButtonSizePx}px`,
+                            lineHeight: 1,
+                          }}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            rotatePlacedShipForMove(ship.id);
+                          }}
+                          title="Rotate"
+                        >
+                          ↻
+                        </button>
+                      )}
                       {editing && (
                         <>
                           <div className="pointer-events-none absolute inset-0 border border-dashed border-cyan-300/90" />
@@ -3528,6 +4737,41 @@ export default function Home() {
                           />
                         </>
                       )}
+                    </div>
+                  );
+                })}
+
+            {!isPlacementInteractionActive &&
+              showSoloDefenseShipVisuals &&
+              soloBattleShipVisuals.map((ship) => {
+                  const visual = ship.visual;
+                  return (
+                    <div
+                      key={`solo-defense-visual-${ship.id}`}
+                      className="pointer-events-none absolute z-[44]"
+                      style={{
+                        width: `${visual.width}px`,
+                        height: `${visual.height}px`,
+                        left: `${visual.x}px`,
+                        top: `${visual.y}px`,
+                        opacity: 1,
+                        transform: `translate(-${visual.anchorXPct}%, -${visual.anchorYPct}%) rotate(${visual.rotationDeg}deg)`,
+                        transformOrigin: "center center",
+                      }}
+                    >
+                      <img
+                        src={getShipIconByOrientation(ship.length, ship.horizontal)}
+                        alt=""
+                        className="pointer-events-none h-full w-full opacity-90"
+                        style={{
+                          filter: buildShipShadowFilter(
+                            visual.shadowAngleDeg,
+                            visual.shadowOpacity,
+                            visual.shadowBlurPx,
+                            SHIP_SHADOW_DISTANCE_PX * boardFrameScale
+                          ),
+                        }}
+                      />
                     </div>
                   );
                 })}
@@ -3581,22 +4825,35 @@ export default function Home() {
             <button
               type="button"
               onClick={handleStartClick}
-              className="absolute bottom-[0.7%] left-1/2 z-30 w-[18%] max-w-[260px] min-w-[150px] -translate-x-1/2 -translate-y-[14px] cursor-pointer transition duration-150 hover:scale-[1.03] active:scale-[0.97]"
+              className={`absolute z-30 cursor-pointer transition duration-150 hover:scale-[1.03] active:scale-[0.97] ${
+                isUiCalibrationMode
+                  ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
+                  : ""
+              }`}
+              style={rectStyle(activeUiCalibration.startButton)}
             >
-              <Image src={UI_START_BUTTON_URL} alt="Start" width={489} height={150} />
+              <Image src={UI_START_BUTTON_URL} alt="Start" fill sizes="(max-width: 768px) 60vw, 320px" className="object-contain" />
             </button>
 
             <img
               src={UI_DECOR_BLUE_URL}
               alt=""
               aria-hidden="true"
-              className="pointer-events-none absolute bottom-[-8.6%] left-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none"
+              className={`pointer-events-none absolute bottom-[-8.6%] left-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none transition-all duration-300 ${
+                leftHeroActive
+                  ? "z-20 scale-[1.03] drop-shadow-[0_0_18px_rgba(251,191,36,0.85)] animate-[heroTurnPulse_1.2s_ease-in-out_infinite]"
+                  : "z-10 scale-100 opacity-95"
+              }`}
             />
             <img
               src={UI_DECOR_RED_URL}
               alt=""
               aria-hidden="true"
-              className="pointer-events-none absolute bottom-[-8.6%] right-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none"
+              className={`pointer-events-none absolute bottom-[-8.6%] right-[0.5%] w-[22.8%] min-w-[190px] max-w-[430px] -translate-y-[44px] select-none transition-all duration-300 ${
+                rightHeroActive
+                  ? "z-20 scale-[1.03] drop-shadow-[0_0_18px_rgba(251,191,36,0.85)] animate-[heroTurnPulse_1.2s_ease-in-out_infinite]"
+                  : "z-10 scale-100 opacity-95"
+              }`}
             />
 
             <Image
@@ -3605,7 +4862,7 @@ export default function Home() {
               width={2244}
               height={412}
               aria-hidden="true"
-              className="pointer-events-none absolute bottom-[0.55%] left-[1.25%] w-[30.5%] -translate-y-[14px] select-none"
+              className="pointer-events-none absolute bottom-[0.55%] left-[1.25%] z-[35] w-[30.5%] -translate-y-[14px] select-none"
             />
             <Image
               src={UI_HEALTH_RED_URL}
@@ -3613,7 +4870,7 @@ export default function Home() {
               width={2214}
               height={422}
               aria-hidden="true"
-              className="pointer-events-none absolute bottom-[0.45%] right-[1.1%] w-[30.2%] -translate-y-[14px] select-none"
+              className="pointer-events-none absolute bottom-[0.45%] right-[1.1%] z-[35] w-[30.2%] -translate-y-[14px] select-none"
             />
 
             {startPanel !== null && (
@@ -3622,9 +4879,9 @@ export default function Home() {
                   type="button"
                   aria-label="Close start panel"
                   onClick={handleCloseStartPanel}
-                  className="absolute inset-0 z-[45]"
+                  className="absolute inset-0 z-[220]"
                 />
-                <div className="absolute bottom-[12.5%] left-1/2 z-50 w-[25.8%] min-w-[250px] max-w-[390px] -translate-x-1/2">
+                <div className="absolute bottom-[12.5%] left-1/2 z-[230] w-[25.8%] min-w-[250px] max-w-[390px] -translate-x-1/2">
                   <div className="relative">
                     <Image
                       src={startPanel === "online" ? UI_ONLINE_PANEL_URL : UI_LEVEL_PANEL_URL}
@@ -3749,10 +5006,10 @@ export default function Home() {
                     if (isUiCalibrationMode) return;
                     setIsMenuOpen(false);
                   }}
-                  className="absolute inset-0 z-[35]"
+                  className="absolute inset-0 z-[210]"
                 />
                 <div
-                  className="absolute z-40 w-[19.6%] min-w-[210px] max-w-[330px]"
+                  className="absolute z-[220] w-[19.6%] min-w-[210px] max-w-[330px]"
                   style={{
                     left: `${MENU_PANEL_CENTER_X_PCT}%`,
                     top: `calc(${MENU_BUTTON_TOP_PCT}% + 96px)`,
@@ -3767,26 +5024,26 @@ export default function Home() {
                         if (isUiCalibrationMode) return;
                         handleToggleSound();
                       }}
-                      className={`absolute ${MODAL_BUTTON_MOTION_CLASS} ${
+                      className={`absolute ${
                         isUiCalibrationMode
                           ? "ring-2 ring-emerald-300/70 ring-offset-1 ring-offset-black/30"
                           : ""
                       }`}
-                      style={rectStyle(activeUiCalibration.soundButton)}
+                      style={rectStyle(
+                        isSoundEnabled
+                          ? activeUiCalibration.soundOnButton
+                          : activeUiCalibration.soundButton
+                      )}
                       aria-label="Toggle music"
                     >
                       <Image
-                        src={UI_BUTTON_SOUND_URL}
+                        src={isSoundEnabled ? UI_BUTTON_SOUND_URL : UI_BUTTON_SOUND_OFF_URL}
                         alt=""
                         fill
                         sizes="(max-width: 768px) 55vw, 260px"
                         className="object-contain"
                       />
                     </button>
-                    <div className="pointer-events-none absolute left-1/2 top-[31.1%] -translate-x-1/2 text-[clamp(10px,0.8vw,13px)] font-semibold tracking-[0.15em] text-[#f4e2b8]">
-                      {isSoundEnabled ? "MUSIC ON" : "MUSIC OFF"}
-                    </div>
-
                     <button
                       type="button"
                       onClick={() => {
@@ -3863,36 +5120,38 @@ export default function Home() {
         </div>
 
         <div className="absolute left-3 top-3 z-[90] w-[min(92vw,360px)]">
-          {!isUiCalibrationMode ? (
+          <div className="mb-2 flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={enterUiCalibrationMode}
+              onClick={() => setIsFocusedCalibrationOpen((prev) => !prev)}
               className="rounded-md border border-cyan-500/70 bg-black/70 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-black/85"
             >
-              Enable Calibration
+              UI/Placement Calibration
             </button>
-          ) : (
+            <button
+              type="button"
+              onClick={() => setIsImpactCalibrationOpen((prev) => !prev)}
+              className="rounded-md border border-amber-500/70 bg-black/70 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-black/85"
+            >
+              Hit/Fork Calibration
+            </button>
+          </div>
+
+          {isFocusedCalibrationOpen && (
             <div className="max-h-[92vh] overflow-auto rounded-lg border border-cyan-500/60 bg-black/85 p-3 text-[11px] text-cyan-50 shadow-[0_0_28px_rgba(14,116,144,0.35)]">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="text-xs font-semibold tracking-wide">Calibration Mode</div>
+                <div className="text-xs font-semibold tracking-wide">Focused Calibration</div>
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={saveUiCalibrationMode}
+                    onClick={() => setIsFocusedCalibrationOpen(false)}
                     className="rounded border border-emerald-500/70 bg-emerald-500/20 px-2 py-1 text-[10px] font-semibold text-emerald-100"
                   >
-                    Save
+                    Done
                   </button>
                   <button
                     type="button"
-                    onClick={cancelUiCalibrationMode}
-                    className="rounded border border-slate-400/70 bg-slate-500/20 px-2 py-1 text-[10px] text-slate-100"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetUiCalibrationMode}
+                    onClick={resetFocusedCalibration}
                     className="rounded border border-amber-500/70 bg-amber-500/20 px-2 py-1 text-[10px] text-amber-100"
                   >
                     Reset
@@ -3900,163 +5159,292 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="mb-2 rounded border border-cyan-900/60 bg-black/45 p-2 text-[10px] text-cyan-100/90">
-                While this mode is active, Online/Offline/Stat/Leader/Login buttons are only
-                moved/resized and won’t trigger actions.
-              </div>
-
-              <div className="space-y-2">
-                {([
-                  ["onlineButton", "Online button"],
-                  ["offlineButton", "Offline button"],
-                  ["babyButton", "Baby button"],
-                  ["manButton", "Man button"],
-                  ["nightmareButton", "Nightmare button"],
-                  ["soundButton", "Sound button"],
-                  ["statButton", "Stat button"],
-                  ["leaderButton", "Leader button"],
-                  ["loginButton", "Login button"],
-                ] as const).map(([key, label]) => {
-                  const current = uiCalibrationDraft[key];
-                  return (
-                    <div key={key} className="rounded border border-cyan-900/50 bg-black/40 p-2">
-                      <div className="mb-1 text-[10px] font-semibold text-cyan-100">{label}</div>
-                      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-                        <label>
-                          X%
-                          <input
-                            type="range"
-                            min={-20}
-                            max={120}
-                            step={0.1}
-                            value={current.leftPct}
-                            onChange={(event) =>
-                              updateCalibrationRect(key, {
-                                leftPct: Number(event.target.value),
-                              })
-                            }
-                            className="w-full"
-                          />
-                        </label>
-                        <label>
-                          Y%
-                          <input
-                            type="range"
-                            min={-20}
-                            max={120}
-                            step={0.1}
-                            value={current.topPct}
-                            onChange={(event) =>
-                              updateCalibrationRect(key, {
-                                topPct: Number(event.target.value),
-                              })
-                            }
-                            className="w-full"
-                          />
-                        </label>
-                        <label>
-                          W%
-                          <input
-                            type="range"
-                            min={5}
-                            max={95}
-                            step={0.1}
-                            value={current.widthPct}
-                            onChange={(event) =>
-                              updateCalibrationRect(key, {
-                                widthPct: Number(event.target.value),
-                              })
-                            }
-                            className="w-full"
-                          />
-                        </label>
-                        <label>
-                          H%
-                          <input
-                            type="range"
-                            min={5}
-                            max={60}
-                            step={0.1}
-                            value={current.heightPct}
-                            onChange={(event) =>
-                              updateCalibrationRect(key, {
-                                heightPct: Number(event.target.value),
-                              })
-                            }
-                            className="w-full"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="mt-3 rounded border border-cyan-900/50 bg-black/40 p-2 text-[10px] text-cyan-100/90">
-                <div className="mb-2 text-[10px] font-semibold text-cyan-100">
-                  Ship Shadow Settings
+              <div className="space-y-3">
+                <div className="rounded border border-cyan-900/50 bg-black/40 p-2">
+                  <div className="mb-2 text-[10px] font-semibold text-cyan-100">Placement panel</div>
+                  <label className="block">
+                    Left ({placementUiCalibration.panelLeftPct.toFixed(1)}%)
+                    <input type="range" min={-20} max={60} step={0.1} value={placementUiCalibration.panelLeftPct} onChange={(event) => updatePlacementUiCalibration({ panelLeftPct: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Top ({placementUiCalibration.panelTopPct.toFixed(1)}%)
+                    <input type="range" min={-20} max={80} step={0.1} value={placementUiCalibration.panelTopPct} onChange={(event) => updatePlacementUiCalibration({ panelTopPct: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Width ({placementUiCalibration.panelWidthPct.toFixed(1)}%)
+                    <input type="range" min={8} max={70} step={0.1} value={placementUiCalibration.panelWidthPct} onChange={(event) => updatePlacementUiCalibration({ panelWidthPct: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Row gap ({placementUiCalibration.panelGapPx.toFixed(1)}px)
+                    <input type="range" min={-120} max={40} step={0.5} value={placementUiCalibration.panelGapPx} onChange={(event) => updatePlacementUiCalibration({ panelGapPx: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Counter X ({Math.round(placementUiCalibration.badgeOffsetXPx)}px)
+                    <input type="range" min={-120} max={120} step={1} value={placementUiCalibration.badgeOffsetXPx} onChange={(event) => updatePlacementUiCalibration({ badgeOffsetXPx: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Counter Y ({Math.round(placementUiCalibration.badgeOffsetYPx)}px)
+                    <input type="range" min={-120} max={120} step={1} value={placementUiCalibration.badgeOffsetYPx} onChange={(event) => updatePlacementUiCalibration({ badgeOffsetYPx: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Counter scale ({placementUiCalibration.badgeScale.toFixed(2)})
+                    <input type="range" min={0.4} max={3} step={0.01} value={placementUiCalibration.badgeScale} onChange={(event) => updatePlacementUiCalibration({ badgeScale: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Ship slot scale ({placementUiCalibration.shipSlotScale.toFixed(2)})
+                    <input type="range" min={0.4} max={6} step={0.01} value={placementUiCalibration.shipSlotScale} onChange={(event) => updatePlacementUiCalibration({ shipSlotScale: Number(event.target.value) })} className="w-full" />
+                  </label>
                 </div>
-                {!activeCalibrationShip?.visual ? (
-                  <div className="text-cyan-100/75">
-                    Select a ship on the left to edit its shadow (angle, opacity, spray).
+
+                <div className="rounded border border-cyan-900/50 bg-black/40 p-2">
+                  <div className="mb-2 text-[10px] font-semibold text-cyan-100">Menu buttons (fine)</div>
+                  <div className="mb-2 grid grid-cols-3 gap-1">
+                    {(Object.keys(menuCalibrationLabels) as MenuCalibrationKey[]).map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setSelectedMenuCalibrationKey(key)}
+                        className={`rounded border px-2 py-1 text-[10px] ${
+                          selectedMenuCalibrationKey === key
+                            ? "border-emerald-300 bg-emerald-500/20 text-emerald-100"
+                            : "border-cyan-900/60 bg-black/40 text-cyan-100/90"
+                        }`}
+                      >
+                        {menuCalibrationLabels[key]}
+                      </button>
+                    ))}
                   </div>
-                ) : (
-                  <div className="grid grid-cols-1 gap-y-1.5">
-                    <label>
-                      Angle ({Math.round(activeCalibrationShip.visual.shadowAngleDeg)}°)
-                      <input
-                        type="range"
-                        min={-180}
-                        max={180}
-                        step={1}
-                        value={activeCalibrationShip.visual.shadowAngleDeg}
-                        onChange={(event) =>
-                          updateActiveShipShadow({
-                            shadowAngleDeg: Number(event.target.value),
-                          })
-                        }
-                        className="w-full"
-                      />
-                    </label>
-                    <label>
-                      Opacity ({Math.round(activeCalibrationShip.visual.shadowOpacity * 100)}%)
-                      <input
-                        type="range"
-                        min={0}
-                        max={1}
-                        step={0.01}
-                        value={activeCalibrationShip.visual.shadowOpacity}
-                        onChange={(event) =>
-                          updateActiveShipShadow({
-                            shadowOpacity: Number(event.target.value),
-                          })
-                        }
-                        className="w-full"
-                      />
-                    </label>
-                    <label>
-                      Spray ({Math.round(activeCalibrationShip.visual.shadowBlurPx)} px)
-                      <input
-                        type="range"
-                        min={0}
-                        max={60}
-                        step={1}
-                        value={activeCalibrationShip.visual.shadowBlurPx}
-                        onChange={(event) =>
-                          updateActiveShipShadow({
-                            shadowBlurPx: Number(event.target.value),
-                          })
-                        }
-                        className="w-full"
-                      />
-                    </label>
-                  </div>
-                )}
+                  <label className="block">
+                    Left ({selectedMenuCalibrationRect.leftPct.toFixed(2)}%)
+                    <input type="range" min={-20} max={95} step={0.07} value={selectedMenuCalibrationRect.leftPct} onChange={(event) => updateMenuCalibrationRect(selectedMenuCalibrationKey, { leftPct: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Top ({selectedMenuCalibrationRect.topPct.toFixed(2)}%)
+                    <input type="range" min={-20} max={95} step={0.07} value={selectedMenuCalibrationRect.topPct} onChange={(event) => updateMenuCalibrationRect(selectedMenuCalibrationKey, { topPct: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Width ({selectedMenuCalibrationRect.widthPct.toFixed(2)}%)
+                    <input type="range" min={3} max={95} step={0.07} value={selectedMenuCalibrationRect.widthPct} onChange={(event) => updateMenuCalibrationRect(selectedMenuCalibrationKey, { widthPct: Number(event.target.value) })} className="w-full" />
+                  </label>
+                  <label className="block">
+                    Height ({selectedMenuCalibrationRect.heightPct.toFixed(2)}%)
+                    <input type="range" min={3} max={65} step={0.07} value={selectedMenuCalibrationRect.heightPct} onChange={(event) => updateMenuCalibrationRect(selectedMenuCalibrationKey, { heightPct: Number(event.target.value) })} className="w-full" />
+                  </label>
+                </div>
+
               </div>
             </div>
           )}
-        </div>
 
+          {isImpactCalibrationOpen && (
+            <div className="mt-2 max-h-[92vh] overflow-auto rounded-lg border border-amber-500/60 bg-black/85 p-3 text-[11px] text-amber-50 shadow-[0_0_28px_rgba(180,83,9,0.35)]">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="text-xs font-semibold tracking-wide">Hit/Fork Calibration</div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsImpactCalibrationOpen(false)}
+                    className="rounded border border-emerald-500/70 bg-emerald-500/20 px-2 py-1 text-[10px] font-semibold text-emerald-100"
+                  >
+                    Done
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetImpactCalibration}
+                    className="rounded border border-amber-500/70 bg-amber-500/20 px-2 py-1 text-[10px] text-amber-100"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-2 text-[10px] text-amber-100/85">
+                Click preview marker on board to set PNG center. The selected PNG center is snapped to cell center. Drag small corner dot to scale.
+              </div>
+
+              <div className="mb-2 grid grid-cols-2 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setImpactCalibrationTarget("hit")}
+                  className={`rounded border px-2 py-1 text-[10px] ${
+                    impactCalibrationTarget === "hit"
+                      ? "border-emerald-300 bg-emerald-500/20 text-emerald-100"
+                      : "border-amber-900/60 bg-black/40 text-amber-100/90"
+                  }`}
+                >
+                  Hit markers
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImpactCalibrationTarget("fork")}
+                  className={`rounded border px-2 py-1 text-[10px] ${
+                    impactCalibrationTarget === "fork"
+                      ? "border-emerald-300 bg-emerald-500/20 text-emerald-100"
+                      : "border-amber-900/60 bg-black/40 text-amber-100/90"
+                  }`}
+                >
+                  Fork variants
+                </button>
+              </div>
+
+              {impactCalibrationTarget === "hit" ? (
+                <div className="space-y-2 rounded border border-amber-900/50 bg-black/40 p-2">
+                  <div className="grid grid-cols-3 gap-1">
+                    {HIT_MARKER_IDS.map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setSelectedHitMarkerId(id)}
+                        className={`rounded border px-2 py-1 text-[10px] ${
+                          selectedHitMarkerId === id
+                            ? "border-emerald-300 bg-emerald-500/20 text-emerald-100"
+                            : "border-amber-900/60 bg-black/40 text-amber-100/90"
+                        }`}
+                      >
+                        {id}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="block">
+                    Scale ({selectedHitMarkerCalibration.scale.toFixed(2)})
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={8}
+                      step={0.01}
+                      value={selectedHitMarkerCalibration.scale}
+                      onChange={(event) =>
+                        updateHitMarkerCalibration(selectedHitMarkerId, {
+                          scale: Number(event.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </label>
+                  <label className="block">
+                    Opacity ({selectedHitMarkerCalibration.opacity.toFixed(2)})
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={selectedHitMarkerCalibration.opacity}
+                      onChange={(event) =>
+                        updateHitMarkerCalibration(selectedHitMarkerId, {
+                          opacity: Number(event.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </label>
+                  <div className="text-[10px] text-amber-100/85">
+                    Center: X {selectedHitMarkerCalibration.centerXPct.toFixed(1)}% / Y{" "}
+                    {selectedHitMarkerCalibration.centerYPct.toFixed(1)}%
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2 rounded border border-amber-900/50 bg-black/40 p-2">
+                  <div className="grid grid-cols-2 gap-1">
+                    {FORK_VARIANT_IDS.map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setSelectedForkVariantId(id)}
+                        className={`rounded border px-2 py-1 text-[10px] ${
+                          selectedForkVariantId === id
+                            ? "border-emerald-300 bg-emerald-500/20 text-emerald-100"
+                            : "border-amber-900/60 bg-black/40 text-amber-100/90"
+                        }`}
+                      >
+                        {id}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="block">
+                    Image path
+                    <input
+                      type="text"
+                      value={selectedForkVariantCalibration.href}
+                      onChange={(event) =>
+                        updateForkVariantCalibration(selectedForkVariantId, {
+                          href: event.target.value,
+                        })
+                      }
+                      className="mt-1 w-full rounded border border-amber-700/70 bg-black/40 px-2 py-1 text-[10px] text-amber-50"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 text-[10px]">
+                    <input
+                      type="checkbox"
+                      checked={selectedForkVariantCalibration.enabled}
+                      onChange={(event) =>
+                        updateForkVariantCalibration(selectedForkVariantId, {
+                          enabled: event.target.checked,
+                        })
+                      }
+                    />
+                    Enabled for randomization
+                  </label>
+                  <label className="block">
+                    Scale ({selectedForkVariantCalibration.scale.toFixed(2)})
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={8}
+                      step={0.01}
+                      value={selectedForkVariantCalibration.scale}
+                      onChange={(event) =>
+                        updateForkVariantCalibration(selectedForkVariantId, {
+                          scale: Number(event.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </label>
+                  <label className="block">
+                    Opacity ({selectedForkVariantCalibration.opacity.toFixed(2)})
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={selectedForkVariantCalibration.opacity}
+                      onChange={(event) =>
+                        updateForkVariantCalibration(selectedForkVariantId, {
+                          opacity: Number(event.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </label>
+                  <label className="block">
+                    Rotation ({Math.round(selectedForkVariantCalibration.rotationDeg)}°)
+                    <input
+                      type="range"
+                      min={-180}
+                      max={180}
+                      step={1}
+                      value={selectedForkVariantCalibration.rotationDeg}
+                      onChange={(event) =>
+                        updateForkVariantCalibration(selectedForkVariantId, {
+                          rotationDeg: Number(event.target.value),
+                        })
+                      }
+                      className="w-full"
+                    />
+                  </label>
+                  <div className="text-[10px] text-amber-100/85">
+                    Center: X {selectedForkVariantCalibration.centerXPct.toFixed(1)}% / Y{" "}
+                    {selectedForkVariantCalibration.centerYPct.toFixed(1)}%
+                  </div>
+                  <div className="text-[10px] text-amber-200/75">
+                    Random forks pick only enabled variants with valid image path.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         {isStatsOpen && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/72 p-4">
             <div className="max-h-[88vh] w-full max-w-5xl overflow-auto rounded-2xl border border-[#6c5130] bg-[#131313] p-5 text-[#f3e8d0] shadow-[0_24px_70px_rgba(0,0,0,0.6)]">
@@ -4289,7 +5677,7 @@ export default function Home() {
                       type="button"
                       onClick={() => {
                         setIsOnlineLobbyOpen(false);
-                        setIsLoginModalOpen(true);
+                        void handleGoogleLogin();
                       }}
                       className="rounded-md border border-cyan-500/70 bg-cyan-500/20 px-3 py-1 text-sm text-cyan-100 hover:bg-cyan-500/30"
                     >
@@ -4455,9 +5843,6 @@ export default function Home() {
                   Placement time left: {roomView.placementSecondsLeft}s | You:{" "}
                   {roomView.yourPlacementReady ? "ready" : "placing"} | Opponent:{" "}
                   {roomView.opponentPlacementReady ? "ready" : "placing"}
-                  <div className="mt-1 text-xs text-[#bca57e]">
-                    Click ship icon, move on board, double-click/right-click to rotate, left click to place.
-                  </div>
                 </div>
               )}
 
@@ -4504,6 +5889,8 @@ export default function Home() {
     </main>
   );
 }
+
+
 
 
 
