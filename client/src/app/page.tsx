@@ -929,6 +929,19 @@ function readStoredRecord(key: string): Record<string, unknown> | null {
   return parseStoredRecord(localStorage.getItem(key));
 }
 
+function readStoredCarpetBoardBoundaryRecord(): Record<string, unknown> | null {
+  if (typeof window === "undefined") return null;
+  const fromPrimary = parseStoredRecord(
+    localStorage.getItem(CARPET_BOARD_BOUNDARY_STORAGE_KEY)
+  );
+  if (fromPrimary) return fromPrimary;
+  for (const legacyKey of CARPET_BOARD_BOUNDARY_LEGACY_KEYS) {
+    const fromLegacy = parseStoredRecord(localStorage.getItem(legacyKey));
+    if (fromLegacy) return fromLegacy;
+  }
+  return null;
+}
+
 function normalizeSharedRecordCandidate(
   candidate: unknown
 ): Record<string, unknown> | null {
@@ -2351,7 +2364,7 @@ export default function Home() {
 
     let cancelled = false;
     const endpoint = `${socketUrl.replace(/\/+$/, "")}/calibration`;
-    const localCarpetBoardBoundary = readStoredRecord(CARPET_BOARD_BOUNDARY_STORAGE_KEY);
+    const localCarpetBoardBoundary = readStoredCarpetBoardBoundaryRecord();
     const localSpriteTransformMap = readStoredRecord(SPRITE_TRANSFORM_STORAGE_KEY);
     const localSnapshot = buildSharedCalibrationSnapshot({
       uiCalibration,
