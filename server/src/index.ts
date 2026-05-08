@@ -227,6 +227,10 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "sea-war-socket",
+    build: "2026-05-08-calibration-sync-2",
+    features: {
+      calibrationApi: true,
+    },
     timestamp: new Date().toISOString(),
   });
 });
