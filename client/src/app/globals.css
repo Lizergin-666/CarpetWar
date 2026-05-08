@@ -47,3 +47,46 @@ body::before {
     transform: translateY(6px);
   }
 }
+
+@keyframes turnArrowFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes heroTurnPulse {
+  0%,
+  100% {
+    transform: scale(1.03);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(1.07);
+    filter: brightness(1.08);
+  }
+}
+
+@keyframes forkStickWobble {
+  0% {
+    transform: rotate(0deg);
+  }
+  22% {
+    transform: rotate(-12deg);
+  }
+  42% {
+    transform: rotate(9deg);
+  }
+  62% {
+    transform: rotate(-6deg);
+  }
+  78% {
+    transform: rotate(3deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}

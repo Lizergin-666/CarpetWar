@@ -89,6 +89,8 @@ const SHIP_SLOT_WIDTH_PCT = 30;
 const SHIP_SLOT_HEIGHT_PCT = 50;
 const SHIP_SLOT_CENTER_X_PCT = SHIP_SLOT_LEFT_PCT + SHIP_SLOT_WIDTH_PCT / 2;
 const SHIP_SLOT_CENTER_Y_PCT = SHIP_SLOT_TOP_PCT + SHIP_SLOT_HEIGHT_PCT / 2;
+const CALIBRATION_TOOLS_VISIBLE =
+  process.env.NEXT_PUBLIC_ENABLE_CALIBRATION_TOOLS === "1";
 const SHIP_ICON_BY_LENGTH_ORIENTATION: Record<
   number,
   { horizontal: string; vertical: string }
@@ -4396,7 +4398,7 @@ export default function Home() {
               className="pointer-events-none absolute left-[1.5%] top-[1.8%] w-[22%] max-w-[320px] select-none"
             />
 
-            {isImpactCalibrationOpen && (
+            {CALIBRATION_TOOLS_VISIBLE && isImpactCalibrationOpen && (
               <>
                 <div className="absolute left-1/2 top-[5.4%] z-[52] flex -translate-x-1/2 items-center gap-1 rounded-md border border-cyan-400/50 bg-black/65 px-2 py-1">
                   {impactCalibrationTarget === "hit"
@@ -5119,7 +5121,8 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="absolute left-3 top-3 z-[90] w-[min(92vw,360px)]">
+        {CALIBRATION_TOOLS_VISIBLE && (
+          <div className="absolute left-3 top-3 z-[90] w-[min(92vw,360px)]">
           <div className="mb-2 flex flex-wrap gap-2">
             <button
               type="button"
@@ -5444,7 +5447,8 @@ export default function Home() {
               )}
             </div>
           )}
-        </div>
+          </div>
+        )}
         {isStatsOpen && (
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/72 p-4">
             <div className="max-h-[88vh] w-full max-w-5xl overflow-auto rounded-2xl border border-[#6c5130] bg-[#131313] p-5 text-[#f3e8d0] shadow-[0_24px_70px_rgba(0,0,0,0.6)]">

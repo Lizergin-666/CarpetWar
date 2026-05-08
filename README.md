@@ -29,6 +29,29 @@ Default URLs:
 - Client: `http://localhost:3000`
 - Server: `http://localhost:4000`
 
+## Production deploy on public domain (Docker + Nginx)
+
+Files:
+- `deploy/docker-compose.prod.yml`
+- `deploy/nginx.conf`
+- `deploy/.env.prod.example`
+
+Steps:
+1. Copy env template:
+   - `cd deploy`
+   - `cp .env.prod.example .env.prod`
+2. Set your domain in `.env.prod`:
+   - `CLIENT_ORIGIN=https://your-domain.com`
+   - `NEXT_PUBLIC_SOCKET_URL=https://your-domain.com`
+3. Start stack:
+   - `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build`
+4. Check health:
+   - `curl http://<server-ip>/health`
+
+Notes:
+- `nginx` routes UI to `client` and Socket.IO/API to `server`.
+- For HTTPS, put Cloudflare/ELB/Caddy/Nginx SSL terminator in front, or extend `nginx.conf` with TLS certificates.
+
 ## Backend env
 
 `server/.env`:
